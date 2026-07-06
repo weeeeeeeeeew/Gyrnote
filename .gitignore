@@ -1,0 +1,43 @@
+# Secrets and private environment files
+/github_api_token.txt
+**/.env
+**/.env.local
+**/.env.*.local
+*.pem
+*.key
+!**/.env.example
+
+# Python
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/.coverage
+**/.coverage.*
+/apps/api/crudadmin_data/
+/apps/api/src/app/logs/
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/coverage/
+**/.eslintcache
+/apps/web/test-results/
+/apps/web/playwright-report/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Downloaded template archive
+/fastapi-boilerplate-v0.17.0.zip
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+/.vscode/
+.idea/
