@@ -187,6 +187,10 @@ jobs:
         working-directory: apps/web
         run: pnpm install --frozen-lockfile
 
+      - name: Build frontend for preview
+        working-directory: apps/web
+        run: pnpm build
+
       - name: Install Chromium
         working-directory: apps/web
         run: pnpm exec playwright install --with-deps chromium
