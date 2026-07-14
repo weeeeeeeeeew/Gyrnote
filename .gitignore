@@ -36,6 +36,9 @@
 # Downloaded template archive
 /fastapi-boilerplate-v0.17.0.zip
 
+# Local project research and learning notes
+/docs/
+
 # OS and IDE
 .DS_Store
 Thumbs.db
