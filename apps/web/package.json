@@ -22,6 +22,8 @@
   },
   "dependencies": {
     "@tanstack/vue-query": "^5.101.2",
+    "@vue-flow/core": "^1.48.2",
+    "dagre": "^0.8.5",
     "pinia": "^3.0.4",
     "vue": "^3.5.38",
     "vue-router": "^5.1.0"
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@playwright/test": "^1.61.0",
     "@tsconfig/node24": "^24.0.4",
+    "@types/dagre": "^0.7.54",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^6.0.7",
