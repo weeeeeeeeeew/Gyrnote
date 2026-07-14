@@ -37,7 +37,8 @@
 # Downloaded template archive
 /fastapi-boilerplate-v0.17.0.zip
 
-# Local project research and learning notes
+# Local project guidance, research, and learning notes
+/AGENTS.md
 /docs/
 
 # OS and IDE
