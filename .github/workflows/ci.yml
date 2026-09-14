@@ -81,6 +81,9 @@ jobs:
       - name: Mypy
         run: python -m mypy src
 
+      - name: Gold-set eval (no live LLM)
+        run: python -m pytest -m eval
+
       - name: Pytest
         run: python -m pytest
 
@@ -90,7 +93,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17.10-alpine3.23
+        image: pgvector/pgvector:0.8.6-pg17
         env:
           POSTGRES_USER: gyrnote_ci
           POSTGRES_PASSWORD: gyrnote_ci

@@ -1,18 +1,41 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
+
+async function signIn(page: Page) {
+  await page.route('**/api/v1/refresh', (route) =>
+    route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: 'Refresh token missing.' }),
+    }),
+  )
+  await page.route('**/api/v1/login', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ access_token: 'e2e-access-token', token_type: 'bearer' }),
+    }),
+  )
+
+  await page.goto('/login')
+  await page.getByLabel('用户名或邮箱').fill('alice')
+  await page.getByLabel('密码').fill('correct-password')
+  await page.getByRole('button', { name: '登录' }).click()
+  await expect(page).toHaveURL('/')
+}
 
 test('displays the backend health status', async ({ page }) => {
-  await page.goto('/')
+  await signIn(page)
 
-  await expect(page.getByText(/status:\s*healthy\s+environment:\s*local\s+version:/)).toBeVisible()
-
-  await expect(page.getByRole('button', { name: '重新检查' })).toBeEnabled()
+  await expect(page.locator('.health-status')).toContainText('healthy')
+  await expect(page.getByRole('button', { name: '检查' })).toBeEnabled()
 })
 
 test('edits a thought node and relationship across outline and graph views', async ({ page }) => {
   const updatedNodeText = '以可解释的前端交互为项目锚点'
 
-  await page.goto('/')
+  await signIn(page)
 
+  await page.getByRole('button', { name: '大纲', exact: true }).click()
   const nodeOutline = page.getByRole('list', { name: '思维模型节点' })
   await nodeOutline.getByRole('button', { name: /claim.*以复杂前端交互为锚/ }).click()
 
@@ -31,7 +54,7 @@ test('edits a thought node and relationship across outline and graph views', asy
   await edgeInspector.getByRole('button', { name: '保存关系' }).click()
   await expect(edgeOutline).toContainText('challenges')
 
-  await page.getByRole('button', { name: '图视图' }).click()
+  await page.getByRole('button', { name: '图', exact: true }).click()
 
   const graph = page.locator('.thought-graph')
   await expect(graph).toContainText(updatedNodeText)

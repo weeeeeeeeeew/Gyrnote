@@ -1,3 +1,4 @@
+from .note import Note, NoteChunk, NoteVersion, SourceAnchor
 from .post import Post
 from .rate_limit import RateLimit
 from .tier import Tier

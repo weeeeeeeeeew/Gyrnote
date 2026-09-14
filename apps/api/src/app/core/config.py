@@ -176,6 +176,26 @@ class CORSSettings(BaseSettings):
     CORS_HEADERS: list[str] = ["*"]
 
 
+class LLMSettings(BaseSettings):
+    """OpenAI-compatible LLM settings. Swap vendor by BASE_URL + MODEL."""
+
+    LLM_BASE_URL: str = "https://api.deepseek.com"
+    LLM_API_KEY: SecretStr | None = None
+    LLM_MODEL: str = "deepseek-v4-flash"
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    LLM_ENABLED: bool = True
+
+
+class EmbeddingSettings(BaseSettings):
+    """OpenAI-compatible embeddings. DeepSeek chat has no /embeddings; set a separate provider."""
+
+    EMBEDDING_ENABLED: bool = False
+    EMBEDDING_BASE_URL: str = ""
+    EMBEDDING_API_KEY: SecretStr | None = None
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_TIMEOUT_SECONDS: float = 30.0
+
+
 class Settings(
     AppSettings,
     SQLiteSettings,
@@ -193,6 +213,8 @@ class Settings(
     CORSSettings,
     FileLoggerSettings,
     ConsoleLoggerSettings,
+    LLMSettings,
+    EmbeddingSettings,
 ):
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".env"),

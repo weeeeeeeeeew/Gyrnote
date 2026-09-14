@@ -15,7 +15,7 @@ admin = create_admin_interface()
 async def lifespan_with_admin(app: FastAPI) -> AsyncGenerator[None, None]:
     """Custom lifespan that includes admin initialization."""
     # Get the default lifespan
-    default_lifespan = lifespan_factory(settings)
+    default_lifespan = lifespan_factory(settings, create_tables_on_start=False)
 
     # Run the default lifespan initialization and our admin initialization
     async with default_lifespan(app):

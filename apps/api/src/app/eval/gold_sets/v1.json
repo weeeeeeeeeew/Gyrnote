@@ -1,0 +1,51 @@
+{
+  "version": "v1",
+  "notes": "Deterministic rule-layer gold set. Not LLM-as-a-Judge. Not live model calls. Do not report these rates as model accuracy.",
+  "cases": [
+    {
+      "id": "citation-grounded-substring",
+      "suite": "citation_from_note",
+      "expect_ok": true,
+      "note_blocks": [{ "id": "b1", "text": "秋招方向需要可回原文的结构图" }],
+      "quotes": [{ "block_id": "b1", "quote": "可回原文" }]
+    },
+    {
+      "id": "citation-invented-quote",
+      "suite": "citation_from_note",
+      "expect_ok": false,
+      "note_blocks": [{ "id": "b1", "text": "秋招方向需要可回原文的结构图" }],
+      "quotes": [{ "block_id": "b1", "quote": "模型编造的句子" }]
+    },
+    {
+      "id": "paraphrase-not-copy",
+      "suite": "no_quote_copy",
+      "expect_ok": true,
+      "quotes": [{ "block_id": "b1", "quote": "可回原文的结构图" }],
+      "node_texts": ["结构必须能回到笔记出处"]
+    },
+    {
+      "id": "exact-quote-copy",
+      "suite": "no_quote_copy",
+      "expect_ok": false,
+      "quotes": [{ "block_id": "b1", "quote": "可回原文的结构图" }],
+      "node_texts": ["可回原文的结构图"]
+    },
+    {
+      "id": "patch-skips-locked",
+      "suite": "locked_immutable",
+      "expect_ok": true,
+      "nodes": [
+        { "id": "n-lock", "review_status": "locked" },
+        { "id": "n-open", "review_status": "confirmed" }
+      ],
+      "patch_ops": [{ "op": "delete_node", "node_id": "n-open" }]
+    },
+    {
+      "id": "patch-targets-locked",
+      "suite": "locked_immutable",
+      "expect_ok": false,
+      "nodes": [{ "id": "n-lock", "review_status": "locked" }],
+      "patch_ops": [{ "op": "delete_node", "node_id": "n-lock" }]
+    }
+  ]
+}

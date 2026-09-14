@@ -1,3 +1,5 @@
+> **Gyrnote:** this FastAPI app is the product API, not a standalone boilerplate demo. For local run, tests, and product invariants, start at the [root README](../../README.md). The rest of this file is the upstream FastAPI-boilerplate guide.
+
 <h1 align="center"> Benav Labs FastAPI boilerplate</h1>
 <p align="center" markdown=1>
   <i><b>Batteries-included FastAPI starter</b> with production-ready defaults, optional modules, and clear docs.</i>

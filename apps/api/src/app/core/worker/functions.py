@@ -3,10 +3,14 @@ import logging
 from typing import Any
 
 import structlog
-import uvloop
 from arq.worker import Worker
 
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+try:
+    import uvloop
+except ImportError:
+    uvloop = None
+else:
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 
 
 # -------- background tasks --------

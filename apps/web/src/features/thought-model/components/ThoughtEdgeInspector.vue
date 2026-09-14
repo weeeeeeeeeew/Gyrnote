@@ -11,6 +11,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   save: [edgeType: ThoughtEdgeType]
+  delete: []
 }>()
 
 const draftType = ref<ThoughtEdgeType>('supports')
@@ -42,47 +43,76 @@ function handleSubmit() {
 
   emit('save', draftType.value)
 }
+
+function handleDelete() {
+  emit('delete')
+}
 </script>
 
 <template>
   <aside class="edge-inspector" aria-label="关系检查器">
-    <p class="eyebrow">有向关系</p>
-    <p class="endpoint">{{ sourceText }}</p>
-    <span class="direction" aria-hidden="true">↓</span>
-    <p class="endpoint">{{ targetText }}</p>
+    <div class="edge-inspector__layout">
+      <div class="edge-inspector__main">
+        <p class="eyebrow">有向关系</p>
+        <div class="edge-inspector__endpoints" aria-label="关系端点">
+          <p class="endpoint">{{ sourceText }}</p>
+          <span class="direction" aria-hidden="true">→</span>
+          <p class="endpoint">{{ targetText }}</p>
+        </div>
 
-    <form class="edge-inspector__form" @submit.prevent="handleSubmit">
-      <label for="thought-edge-type">关系类型</label>
-      <select id="thought-edge-type" v-model="draftType">
-        <option v-for="edgeType in THOUGHT_EDGE_TYPES" :key="edgeType" :value="edgeType">
-          {{ edgeType }}
-        </option>
-      </select>
-      <button type="submit" :disabled="!canSave">保存关系</button>
-    </form>
+        <form class="edge-inspector__form" @submit.prevent="handleSubmit">
+          <label for="thought-edge-type">关系类型</label>
+          <div class="edge-inspector__type-row">
+            <select id="thought-edge-type" v-model="draftType">
+              <option v-for="edgeType in THOUGHT_EDGE_TYPES" :key="edgeType" :value="edgeType">
+                {{ edgeType }}
+              </option>
+            </select>
+            <div class="edge-inspector__actions">
+              <button
+                type="button"
+                class="edge-inspector__delete"
+                aria-label="删除关系"
+                @click="handleDelete"
+              >
+                删除
+              </button>
+              <button type="submit" :disabled="!canSave">保存关系</button>
+            </div>
+          </div>
+        </form>
+      </div>
 
-    <dl>
-      <div>
-        <dt>来源</dt>
-        <dd>{{ edge.origin }}</dd>
-      </div>
-      <div>
-        <dt>显式性</dt>
-        <dd>{{ edge.explicitness }}</dd>
-      </div>
-      <div>
-        <dt>审阅状态</dt>
-        <dd>{{ edge.reviewStatus }}</dd>
-      </div>
-    </dl>
+      <dl class="edge-inspector__meta">
+        <div>
+          <dt>来源</dt>
+          <dd>{{ edge.origin }}</dd>
+        </div>
+        <div>
+          <dt>显式性</dt>
+          <dd>{{ edge.explicitness }}</dd>
+        </div>
+        <div>
+          <dt>审阅状态</dt>
+          <dd>{{ edge.reviewStatus }}</dd>
+        </div>
+      </dl>
+    </div>
   </aside>
 </template>
 
 <style scoped>
 .edge-inspector {
-  padding: 24px;
-  border-left: 1px solid #deddd4;
+  padding: 12px 16px;
+  border-top: 1px solid #deddd4;
   background: #f8f6ef;
+}
+
+.edge-inspector__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(200px, 0.7fr);
+  gap: 16px 20px;
+  align-items: start;
 }
 
 .eyebrow,
@@ -93,38 +123,53 @@ function handleSubmit() {
 }
 
 .eyebrow {
-  margin-bottom: 10px;
+  margin: 0 0 8px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
+.edge-inspector__endpoints {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
 .endpoint {
-  padding: 10px;
+  margin: 0;
+  padding: 8px 10px;
   border: 1px solid #deddd4;
-  border-radius: 10px;
-  line-height: 1.4;
+  border-radius: 8px;
+  line-height: 1.35;
   background: #ffffff;
+  overflow-wrap: anywhere;
 }
 
 .direction {
-  display: block;
-  margin: 4px 0;
   color: #57735b;
-  text-align: center;
+  font-weight: 700;
 }
 
 .edge-inspector__form {
   display: grid;
-  gap: 10px;
-  margin: 22px 0 24px;
+  gap: 6px;
+}
+
+.edge-inspector__type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .edge-inspector select {
-  width: 100%;
-  padding: 9px 10px;
+  flex: 1;
+  min-width: 140px;
+  padding: 8px 10px;
   border: 1px solid #c9cbc3;
-  border-radius: 10px;
+  border-radius: 8px;
   color: inherit;
   font: inherit;
   background: #ffffff;
@@ -136,8 +181,7 @@ function handleSubmit() {
 }
 
 .edge-inspector button {
-  justify-self: end;
-  padding: 8px 14px;
+  padding: 7px 12px;
   border: 0;
   border-radius: 8px;
   color: #ffffff;
@@ -146,30 +190,42 @@ function handleSubmit() {
   background: #48634d;
 }
 
+.edge-inspector__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.edge-inspector__delete {
+  color: #6b3a3a;
+  background: #f3e4e4;
+}
+
 .edge-inspector button:disabled {
   color: #8b9088;
   cursor: not-allowed;
   background: #e2e3de;
 }
 
-.edge-inspector dl {
+.edge-inspector__meta {
   display: grid;
-  gap: 14px;
+  gap: 8px;
+  margin: 0;
 }
 
-.edge-inspector dl div {
-  display: grid;
-  gap: 2px;
+.edge-inspector__meta div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
 }
 
 .edge-inspector dd {
   margin: 0;
 }
 
-@media (max-width: 760px) {
-  .edge-inspector {
-    border-top: 1px solid #deddd4;
-    border-left: 0;
+@media (max-width: 900px) {
+  .edge-inspector__layout {
+    grid-template-columns: 1fr;
   }
 }
 </style>

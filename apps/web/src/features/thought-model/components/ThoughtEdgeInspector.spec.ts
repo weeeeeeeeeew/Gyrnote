@@ -76,6 +76,19 @@ describe('ThoughtEdgeInspector', () => {
 
     expect(wrapper.emitted('save')).toEqual([['qualifies']])
   })
+
+  it('emits delete when the delete action is clicked', async () => {
+    const wrapper = mount(ThoughtEdgeInspector, {
+      props: {
+        edge: createEdge(),
+        sourceText: '证据节点',
+        targetText: '结论节点',
+      },
+    })
+
+    await wrapper.get('button[aria-label="删除关系"]').trigger('click')
+    expect(wrapper.emitted('delete')).toEqual([[]])
+  })
 })
 
 function createEdge(overrides: Partial<ThoughtEdge> = {}): ThoughtEdge {
@@ -84,6 +97,7 @@ function createEdge(overrides: Partial<ThoughtEdge> = {}): ThoughtEdge {
     sourceNodeId: 'evidence-shared-workflow',
     targetNodeId: 'claim-product-engineer',
     type: 'supports',
+    label: null,
     origin: 'user_created',
     explicitness: 'explicit',
     reviewStatus: 'confirmed',

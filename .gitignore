@@ -7,6 +7,9 @@
 *.key
 !**/.env.example
 
+# Local chat dumps (may contain private notes)
+/chat.md
+
 # Python
 **/__pycache__/
 *.py[cod]

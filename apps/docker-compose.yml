@@ -1,15 +1,17 @@
 name: gyrnote
 
+# postgres-pgvector-data is a new volume so the old alpine data dir is left unused, not deleted.
+
 services:
   db:
-    image: postgres:17.10-alpine3.23
+    image: pgvector/pgvector:0.8.6-pg17
     restart: unless-stopped
     env_file:
       - ./api/src/.env
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-pgvector-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -31,5 +33,5 @@ services:
       retries: 10
 
 volumes:
-  postgres-data:
+  postgres-pgvector-data:
   redis-data:

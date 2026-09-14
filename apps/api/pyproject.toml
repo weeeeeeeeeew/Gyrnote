@@ -35,6 +35,8 @@ dependencies = [
     "mypy>=1.16.0",
     "structlog>=25.1.0,<=25.5.0",
     "rich>=14.2.0",
+    "langgraph>=0.6,<2",
+    "pgvector>=0.4.0",
 ]
 
 [project.optional-dependencies]
@@ -101,6 +103,10 @@ max-complexity = 24
 convention = "numpy"
 
 [tool.pytest.ini_options]
+markers = [
+    "eval: deterministic gold-set eval; no live LLM",
+    "integration: needs local Redis; skipped when the queue is down",
+]
 filterwarnings = [
     "ignore::PendingDeprecationWarning:starlette.formparsers",
 ]
