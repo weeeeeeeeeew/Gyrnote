@@ -49,13 +49,14 @@ describe('CandidateGenerationControls', () => {
 
     expect(wrapper.get('button').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('正在生成')
+    expect(wrapper.text()).toContain('约需一分钟')
 
     await wrapper.setProps({ status: 'ready', candidateNodeCount: 3 })
 
     expect(wrapper.get('button').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('已生成 3 个候选节点')
-    expect(wrapper.text()).toContain('请在审阅区接受')
-    expect(wrapper.text()).toContain('图/大纲仍是确认模型')
+    expect(wrapper.text()).toContain('确认图已清空')
+    expect(wrapper.text()).toContain('请在审阅区逐条接受')
   })
 
   it('surfaces generation errors and offers a retry label', () => {
@@ -73,6 +74,26 @@ describe('CandidateGenerationControls', () => {
     expect(wrapper.get('button').text()).toBe('重试生成候选模型')
     expect(wrapper.get('[role="alert"]').text()).toContain(
       '候选模型必须绑定有效的 Note revision',
+    )
+  })
+
+  it('keeps the compile bridge compact and exposes status on the button title', () => {
+    const wrapper = mount(CandidateGenerationControls, {
+      props: {
+        compact: true,
+        noteId: null,
+        revision: null,
+        status: 'idle',
+        errorMessage: null,
+        candidateNodeCount: 0,
+      },
+    })
+
+    expect(wrapper.get('button').text()).toBe('编译')
+    expect(wrapper.get('button').attributes('title')).toContain('请先保存笔记')
+    expect(wrapper.get('[role="status"]').text()).toContain('请先保存笔记')
+    expect(wrapper.get('.candidate-generation--compact').classes()).toContain(
+      'candidate-generation--compact',
     )
   })
 })

@@ -14,19 +14,40 @@ export class ApiError extends Error {
 }
 
 export async function customFetch<T>(url: string, options: RequestInit): Promise<T> {
-  const headers = new Headers(options.headers)
+  let headers: Headers
+  try {
+    headers = new Headers(options.headers)
+  } catch {
+    throw new ApiError(
+      400,
+      null,
+      '模型密钥或请求头含非法字符。请检查 API Key / Base URL 是否粘进了换行或中文标点。',
+    )
+  }
   const pinia = getActivePinia()
   const accessToken = pinia ? useAuthStore(pinia).accessToken : null
   if (accessToken && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${accessToken}`)
   }
 
-  const response = await fetch(url, {
-    cache: 'no-store',
-    credentials: 'include',
-    ...options,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(url, {
+      cache: 'no-store',
+      credentials: 'include',
+      ...options,
+      headers,
+    })
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        503,
+        null,
+        '无法连接 API（Failed to fetch）。请确认 uvicorn 在 127.0.0.1:8000 运行，Vite 仍代理 /api，且 Redis/worker 进程还在。',
+      )
+    }
+    throw error
+  }
 
   const text = await response.text()
   let data: unknown

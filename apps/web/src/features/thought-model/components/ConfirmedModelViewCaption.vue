@@ -19,15 +19,15 @@ defineProps<{
 .confirmed-caption {
   margin: 0;
   padding: 8px 12px;
-  border-bottom: 1px solid #deddd4;
-  color: #5a6258;
+  border-bottom: 1px solid var(--gyre-line);
+  color: var(--gyre-deep);
   font-size: 12px;
   line-height: 1.4;
-  background: #f0eee6;
+  background: var(--gyre-mist);
 }
 
 .confirmed-caption strong {
-  color: #2f4a32;
+  color: var(--gyre-ink);
   font-weight: 700;
 }
 </style>

@@ -113,8 +113,8 @@ function handleConnect(connection: Connection) {
   flex: 1;
   min-height: 360px;
   background:
-    radial-gradient(circle at 1px 1px, #d8d6cb 1px, transparent 0) 0 0 / 22px 22px,
-    #fffdf8;
+    radial-gradient(circle at 1px 1px, var(--gyre-foam) 1px, transparent 0) 0 0 / 22px 22px,
+    #f8fcfe;
 }
 
 .thought-node {
@@ -125,18 +125,18 @@ function handleConnect(connection: Connection) {
   align-content: start;
   gap: 8px;
   padding: 14px;
-  border: 1px solid #cfd8cc;
+  border: 1px solid var(--gyre-line);
   border-radius: 16px;
-  color: #20251f;
+  color: var(--gyre-ink);
   background: #ffffff;
-  box-shadow: 0 12px 28px rgb(43 48 38 / 12%);
+  box-shadow: 0 12px 28px rgb(12 58 82 / 12%);
 }
 
 .thought-node.is-selected {
-  border-color: #57735b;
+  border-color: var(--gyre);
   box-shadow:
-    0 0 0 3px rgb(87 115 91 / 18%),
-    0 14px 32px rgb(43 48 38 / 16%);
+    0 0 0 3px rgb(0 160 232 / 18%),
+    0 14px 32px rgb(12 58 82 / 14%);
 }
 
 .thought-node__type,
@@ -149,14 +149,14 @@ function handleConnect(connection: Connection) {
 
 .thought-node__type {
   padding: 3px 8px;
-  color: #38523a;
-  background: #e3eee0;
+  color: var(--gyre-deep);
+  background: var(--gyre-mist);
 }
 
 .thought-node__status {
   padding: 2px 7px;
-  color: #777d73;
-  background: #f3f0e8;
+  color: var(--gyre-deep);
+  background: var(--gyre-surface);
 }
 
 .thought-node p {
@@ -166,7 +166,7 @@ function handleConnect(connection: Connection) {
 .thought-node__handle {
   width: 10px;
   height: 10px;
-  border: 2px solid #57735b;
+  border: 2px solid var(--gyre);
   background: #ffffff;
 }
 

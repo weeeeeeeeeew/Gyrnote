@@ -25,7 +25,7 @@ describe('patch review HTTP gate', () => {
 
   it('does not write the confirmed model until resume returns approved', async () => {
     const workbench = useThoughtModelWorkbenchStore()
-    workbench.pendingPatch = {
+    workbench.pendingInstructionPatch = {
       id: 'patch-delete-only',
       noteId: workbench.model.noteId,
       baseModelVersion: workbench.model.version,
@@ -48,12 +48,12 @@ describe('patch review HTTP gate', () => {
 
     expect(await workbench.approvePendingPatchViaReview()).toBe(false)
     expect(workbench.model.nodes).toHaveLength(beforeCount)
-    expect(workbench.pendingPatch).not.toBeNull()
+    expect(workbench.pendingInstructionPatch).not.toBeNull()
   })
 
-  it('applies the pending patch only after approved resume', async () => {
+  it('applies the pending instruction patch only after approved resume', async () => {
     const workbench = useThoughtModelWorkbenchStore()
-    workbench.pendingPatch = {
+    workbench.pendingInstructionPatch = {
       id: 'patch-delete-only',
       noteId: workbench.model.noteId,
       baseModelVersion: workbench.model.version,
@@ -74,12 +74,12 @@ describe('patch review HTTP gate', () => {
     })
 
     expect(await workbench.approvePendingPatchViaReview()).toBe(true)
-    expect(workbench.pendingPatch).toBeNull()
+    expect(workbench.pendingInstructionPatch).toBeNull()
     expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(false)
     expect(resumePatchReview).toHaveBeenCalledWith({ threadId: 'thread-1', decision: 'approve' })
   })
 
-  it('puts an instruction compile onto pendingPatch without writing the confirmed model', async () => {
+  it('puts an instruction compile onto the instruction lane without writing the confirmed model', async () => {
     const workbench = useThoughtModelWorkbenchStore()
     const beforeCount = workbench.model.nodes.length
     vi.mocked(compileInstructionPatch).mockResolvedValue({
@@ -94,10 +94,12 @@ describe('patch review HTTP gate', () => {
       true,
     )
     expect(workbench.model.nodes).toHaveLength(beforeCount)
-    expect(workbench.pendingPatch?.id).not.toBe(workbench.model.id)
-    expect(workbench.pendingPatch?.ops).toEqual([
+    expect(workbench.pendingInstructionPatch?.id).not.toBe(workbench.model.id)
+    expect(workbench.pendingInstructionPatch?.ops).toEqual([
       { op: 'update_node_text', nodeId: 'claim-product-engineer', text: '结构必须回到笔记' },
     ])
+    expect(workbench.instructionPatchFeedback).toContain('已生成 1 条候选操作')
+    expect(workbench.pendingNoteChangePatch).toBeNull()
     expect(startPatchReview).not.toHaveBeenCalled()
   })
 
@@ -106,7 +108,23 @@ describe('patch review HTTP gate', () => {
     vi.mocked(compileInstructionPatch).mockRejectedValue(new Error('501'))
 
     expect(await workbench.compileInstructionPatchFromInstruction('改图')).toBe(false)
-    expect(workbench.pendingPatch).toBeNull()
-    expect(workbench.patchFeedback).toContain('501')
+    expect(workbench.pendingInstructionPatch).toBeNull()
+    expect(workbench.instructionPatchFeedback).toContain('501')
+  })
+
+  it('does not start interrupt review when staging a note-change patch', () => {
+    const workbench = useThoughtModelWorkbenchStore()
+    workbench.pendingInstructionPatch = {
+      id: 'patch-nl',
+      noteId: workbench.model.noteId,
+      baseModelVersion: workbench.model.version,
+      reason: 'nl',
+      ops: [{ op: 'update_node_text', nodeId: 'claim-product-engineer', text: '结构必须回到笔记' }],
+    }
+    workbench.loadFixtureModelPatch()
+
+    expect(workbench.pendingInstructionPatch?.id).toBe('patch-nl')
+    expect(workbench.pendingNoteChangePatch).not.toBeNull()
+    expect(startPatchReview).not.toHaveBeenCalled()
   })
 })

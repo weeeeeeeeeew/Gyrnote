@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   THOUGHT_NODE_TYPES,
+  createBlankThoughtModel,
   isCandidateThoughtNode,
   isThoughtNodeType,
   resolveCustomLabel,
@@ -11,6 +12,13 @@ import {
 import type { CandidateThoughtEdge, CandidateThoughtNode } from './thought-model'
 
 describe('isThoughtNodeType', () => {
+  it('creates an empty confirmed model without covering the note', () => {
+    const model = createBlankThoughtModel('空白笔记')
+    expect(model.nodes).toEqual([])
+    expect(model.edges).toEqual([])
+    expect(model.title).toBe('空白笔记')
+  })
+
   it.each(THOUGHT_NODE_TYPES)('accepts the supported node type %s', (nodeType) => {
     expect(isThoughtNodeType(nodeType)).toBe(true)
   })

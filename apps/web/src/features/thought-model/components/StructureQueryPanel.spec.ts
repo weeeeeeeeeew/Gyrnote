@@ -1,6 +1,8 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { renderTeleportStub } from '@/test-support/teleport-stub'
+
 import StructureQueryPanel from './StructureQueryPanel.vue'
 
 vi.mock('../api/structure-queries-api', () => ({
@@ -16,7 +18,9 @@ describe('StructureQueryPanel', () => {
   })
 
   it('starts collapsed so the confirmed graph keeps space', () => {
-    const wrapper = mount(StructureQueryPanel)
+    const wrapper = mount(StructureQueryPanel, {
+      global: { stubs: renderTeleportStub },
+    })
     expect(wrapper.find('.structure-query__actions').exists()).toBe(false)
   })
 
@@ -35,7 +39,9 @@ describe('StructureQueryPanel', () => {
         },
       ],
     })
-    const wrapper = mount(StructureQueryPanel)
+    const wrapper = mount(StructureQueryPanel, {
+      global: { stubs: renderTeleportStub },
+    })
 
     await wrapper.get('.structure-query__toggle').trigger('click')
     await wrapper.get('.structure-query__actions button').trigger('click')

@@ -9,6 +9,7 @@ import {
   type StructureQueryHit,
   type StructureQueryKind,
 } from '../api/structure-queries-api'
+import WorkbenchModal from './WorkbenchModal.vue'
 
 const labels: Record<StructureQueryKind, string> = {
   unsupported_claims: '薄弱论点',
@@ -55,10 +56,12 @@ async function runKind(kind: StructureQueryKind) {
       :aria-expanded="isOpen"
       @click="isOpen = !isOpen"
     >
-      {{ isOpen ? '收起结构查询' : '结构查询' }}
+      结构查询
     </button>
-    <template v-if="isOpen">
-    <p class="structure-query__lead">图只过滤结构，结果里的文字来自笔记。</p>
+    <WorkbenchModal :open="isOpen" size="tall" title="结构查询" @close="isOpen = false">
+    <p class="structure-query__lead">
+      三个固定检查，不是搜索框：薄弱论点（主张没有证据边）、共同前提（多篇笔记里原文相同的假设）、未闭环问题（问题没有 answers 边）。命中带来自笔记的引用。通用问题请用「召回原文」或「笔记问答」。
+    </p>
     <div class="structure-query__actions">
       <button
         v-for="kind in STRUCTURE_QUERY_KINDS"
@@ -72,7 +75,7 @@ async function runKind(kind: StructureQueryKind) {
     </div>
     <p v-if="errorMessage" class="structure-query__error" role="alert">{{ errorMessage }}</p>
     <p v-else-if="resultKind && hits.length === 0" class="structure-query__empty" role="status">
-      没有命中
+      没有命中。需要已确认/锁定的节点和关系；刚清空或从未接受候选时这里会为空。
     </p>
     <ol v-else-if="hits.length > 0" class="structure-query__hits">
       <li v-for="hit in hits" :key="`${hit.noteId}:${hit.nodeId}`">
@@ -83,7 +86,7 @@ async function runKind(kind: StructureQueryKind) {
         </button>
       </li>
     </ol>
-    </template>
+    </WorkbenchModal>
   </section>
 </template>
 
@@ -94,16 +97,16 @@ async function runKind(kind: StructureQueryKind) {
   gap: 8px;
   margin: 0;
   padding: 8px 12px;
-  border-bottom: 1px solid #deddd4;
-  background: #f4f1e8;
+  border-bottom: 1px solid var(--gyre-line);
+  background: var(--gyre-surface);
 }
 
 .structure-query__toggle {
   width: fit-content;
   padding: 5px 10px;
-  border: 1px solid #c9cbc3;
+  border: 1px solid var(--gyre-line);
   border-radius: 8px;
-  color: #38523a;
+  color: var(--gyre-deep);
   font: inherit;
   font-size: 12px;
   font-weight: 700;
@@ -116,7 +119,7 @@ async function runKind(kind: StructureQueryKind) {
 .structure-query__empty,
 .structure-query__reason {
   margin: 0;
-  color: #5f675b;
+  color: var(--gyre-deep);
   font-size: 12px;
 }
 
@@ -138,9 +141,9 @@ async function runKind(kind: StructureQueryKind) {
 
 .structure-query__actions button {
   padding: 6px 10px;
-  border: 1px solid #2f4f6f;
+  border: 1px solid var(--gyre);
   border-radius: 8px;
-  background: #2f4f6f;
+  background: var(--gyre);
   color: #fff;
 }
 
@@ -161,7 +164,7 @@ async function runKind(kind: StructureQueryKind) {
   gap: 2px;
   width: 100%;
   padding: 8px;
-  border: 1px solid #d7ddd3;
+  border: 1px solid var(--gyre-line);
   border-radius: 8px;
   background: #fff;
 }

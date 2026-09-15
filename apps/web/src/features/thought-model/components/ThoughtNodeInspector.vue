@@ -9,6 +9,8 @@ import { displayThoughtTypeLabel } from '../domain/thought-model'
 const props = defineProps<{
   node: ThoughtNode | null
   sourceAnchor?: IdentifiedSourceAnchor | null
+  sourceAnchors?: IdentifiedSourceAnchor[]
+  focusedSourceAnchorId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -16,6 +18,7 @@ const emit = defineEmits<{
   lock: []
   unlock: []
   delete: []
+  locateAnchor: [anchorId: string]
 }>()
 
 const draftText = ref('')
@@ -91,6 +94,21 @@ function handleDelete() {
 
   emit('delete')
 }
+
+const listedAnchors = computed(() => {
+  const ids = props.node?.sourceAnchorIds ?? []
+  const records = props.sourceAnchors ?? []
+  const fallback = props.sourceAnchor ? [props.sourceAnchor] : []
+  const byId = new Map(
+    [...fallback, ...records].map((anchor) => [anchor.id, anchor] as const),
+  )
+  return ids.map((id, index) => ({
+    id,
+    ordinal: index + 1,
+    quote: byId.get(id)?.quote ?? null,
+    focused: (props.focusedSourceAnchorId ?? fallback[0]?.id) === id,
+  }))
+})
 </script>
 
 <template>
@@ -159,11 +177,25 @@ function handleDelete() {
           <div class="inspector__meta-anchor">
             <dt>原文锚点</dt>
             <dd>
-              <template v-if="node && node.sourceAnchorIds.length > 0">
-                {{ sourceAnchor ? `“${sourceAnchor.quote}”` : node.sourceAnchorIds.join(', ') }}
-                <span v-if="node.sourceAnchorIds.length > 1">
-                  等 {{ node.sourceAnchorIds.length }} 处
-                </span>
+              <template v-if="listedAnchors.length > 0">
+                <ol class="inspector__anchor-list">
+                  <li
+                    v-for="anchor in listedAnchors"
+                    :key="anchor.id"
+                    :class="{ 'is-focused': anchor.focused }"
+                  >
+                    <p class="inspector__anchor-quote">
+                      {{ anchor.quote ? `“${anchor.quote}”` : anchor.id }}
+                    </p>
+                    <button
+                      type="button"
+                      :aria-label="`定位第 ${anchor.ordinal} 处原文`"
+                      @click="emit('locateAnchor', anchor.id)"
+                    >
+                      定位第 {{ anchor.ordinal }} 处
+                    </button>
+                  </li>
+                </ol>
               </template>
               <template v-else>未关联</template>
             </dd>
@@ -178,8 +210,8 @@ function handleDelete() {
 <style scoped>
 .inspector {
   padding: 12px 16px;
-  border-top: 1px solid #deddd4;
-  background: #f8f6ef;
+  border-top: 1px solid var(--gyre-line);
+  background: var(--gyre-surface);
 }
 
 .inspector__layout {
@@ -206,10 +238,10 @@ function handleDelete() {
   width: fit-content;
   padding: 3px 8px;
   border-radius: 999px;
-  color: #38523a;
+  color: var(--gyre-deep);
   font-size: 12px;
   font-weight: 700;
-  background: #e3eee0;
+  background: var(--gyre-mist);
 }
 
 .inspector__form {
@@ -219,7 +251,7 @@ function handleDelete() {
 
 .inspector__form label,
 .inspector dt {
-  color: #777d73;
+  color: var(--gyre-deep);
   font-size: 12px;
 }
 
@@ -229,7 +261,7 @@ function handleDelete() {
   min-height: 52px;
   max-height: 96px;
   padding: 8px 10px;
-  border: 1px solid #c9cbc3;
+  border: 1px solid var(--gyre-line);
   border-radius: 8px;
   color: inherit;
   font: inherit;
@@ -238,8 +270,8 @@ function handleDelete() {
 }
 
 .inspector__form textarea:focus-visible {
-  border-color: #57735b;
-  outline: 3px solid rgb(87 115 91 / 16%);
+  border-color: var(--gyre);
+  outline: 3px solid rgb(0 160 232 / 16%);
 }
 
 .inspector__form button {
@@ -249,7 +281,7 @@ function handleDelete() {
   color: #ffffff;
   font: inherit;
   cursor: pointer;
-  background: #48634d;
+  background: var(--gyre);
 }
 
 .inspector__actions {
@@ -259,8 +291,8 @@ function handleDelete() {
 }
 
 .inspector__actions button[type='button'] {
-  color: #2f4f6f;
-  background: #e4eef6;
+  color: var(--gyre-deep);
+  background: var(--gyre-mist);
 }
 
 .inspector__actions .inspector__delete {
@@ -300,6 +332,45 @@ function handleDelete() {
   grid-column: 1 / -1;
 }
 
+.inspector__anchor-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.inspector__anchor-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid var(--gyre-line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.inspector__anchor-list li.is-focused {
+  border-color: var(--gyre);
+  background: var(--gyre-mist);
+}
+
+.inspector__anchor-quote {
+  margin: 0;
+}
+
+.inspector__anchor-list button {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--gyre-deep);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background: var(--gyre-mist);
+}
+
 .inspector dd {
   margin: 0;
   min-width: 0;
@@ -308,7 +379,7 @@ function handleDelete() {
 
 .inspector__empty {
   margin: 0;
-  color: #687064;
+  color: var(--gyre-deep);
 }
 
 @media (max-width: 900px) {

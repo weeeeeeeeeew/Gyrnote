@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Any
 
@@ -71,14 +72,27 @@ def map_arq_job_to_read(
     raise CandidateJobNotFoundError("compile job not found")
 
 
-async def enqueue_candidate_compile_job(owner_id: int, request: CandidateCompileRequest) -> CandidateJobRead:
+async def enqueue_candidate_compile_job(
+    owner_id: int,
+    request: CandidateCompileRequest,
+    llm_override: dict[str, Any] | None = None,
+) -> CandidateJobRead:
     if queue.pool is None:
         raise CandidateJobQueueUnavailableError("Queue is not available")
-    job = await queue.pool.enqueue_job(
-        COMPILE_CANDIDATE_JOB_NAME,
-        owner_id,
-        request.model_dump(mode="json"),
-    )
+    try:
+        job = await asyncio.wait_for(
+            queue.pool.enqueue_job(
+                COMPILE_CANDIDATE_JOB_NAME,
+                owner_id,
+                request.model_dump(mode="json"),
+                llm_override,
+            ),
+            timeout=5,
+        )
+    except TimeoutError as exc:
+        raise CandidateJobQueueUnavailableError("Queue enqueue timed out") from exc
+    except OSError as exc:
+        raise CandidateJobQueueUnavailableError("Queue is not available") from exc
     if job is None:
         raise CandidateJobQueueUnavailableError("Failed to enqueue compile job")
     return CandidateJobRead(job_id=job.job_id, status="queued")
@@ -101,14 +115,20 @@ async def read_candidate_job(job_id: str, owner_id: int) -> CandidateJobRead:
     )
 
 
-async def compile_candidate_job(ctx: dict[str, Any], owner_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+async def compile_candidate_job(
+    ctx: dict[str, Any],
+    owner_id: int,
+    payload: dict[str, Any],
+    llm_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """ARQ worker: run candidate compile and return a candidate dump. Do not write notes.
 
-    Inputs: ARQ ctx, owner_id, CandidateCompileRequest JSON.
+    Inputs: ARQ ctx, owner_id, CandidateCompileRequest JSON, optional llm override.
     Output: CandidateThoughtModel.model_dump(mode="json").
     Fail closed on invalid payload or compile errors. Never persist confirmed ThoughtModel.
+    Never log llm_override (may hold secrets).
     """
     _ = ctx, owner_id
     request = CandidateCompileRequest.model_validate(payload)
-    candidate = await compile_candidate_model(request)
+    candidate = await compile_candidate_model(request, llm_override=llm_override)
     return candidate.model_dump(mode="json")

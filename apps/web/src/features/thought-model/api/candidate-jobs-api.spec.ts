@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/api/http-client'
 
-import { compileCandidateModelViaJob } from './candidate-jobs-api'
+import {
+  CANDIDATE_COMPILE_TIMEOUT_MS,
+  compileCandidateModelViaJob,
+} from './candidate-jobs-api'
 
 vi.mock('@/api/http-client', async () => {
   const actual = await vi.importActual<typeof import('@/api/http-client')>('@/api/http-client')
@@ -103,6 +106,47 @@ describe('compileCandidateModelViaJob', () => {
       })
     await expect(compileCandidateModelViaJob(payload, { pollDelayMs: 0 })).rejects.toMatchObject({
       message: 'compile_candidate_job',
+    })
+  })
+
+  it('keeps polling long enough to cover a 60s LLM timeout', () => {
+    expect(CANDIDATE_COMPILE_TIMEOUT_MS).toBeGreaterThanOrEqual(90_000)
+  })
+
+  it('times out queued jobs after the configured window', async () => {
+    vi.mocked(customFetch).mockResolvedValue({
+      data: { job_id: 'job-1', status: 'queued' },
+      status: 202,
+      headers: new Headers(),
+    })
+
+    await expect(
+      compileCandidateModelViaJob(payload, { pollDelayMs: 0, timeoutMs: 0 }),
+    ).rejects.toMatchObject({
+      status: 504,
+      message: expect.stringContaining('超时'),
+    })
+    expect(customFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('returns the candidate if the job finishes on the last poll after timeout', async () => {
+    vi.mocked(customFetch)
+      .mockResolvedValueOnce({
+        data: { job_id: 'job-1', status: 'queued' },
+        status: 202,
+        headers: new Headers(),
+      })
+      .mockResolvedValueOnce({
+        data: { job_id: 'job-1', status: 'succeeded', candidate: candidateBody },
+        status: 200,
+        headers: new Headers(),
+      })
+
+    await expect(
+      compileCandidateModelViaJob(payload, { pollDelayMs: 0, timeoutMs: 0 }),
+    ).resolves.toMatchObject({
+      id: 'candidate-note-1-1',
+      noteId: 'note-1',
     })
   })
 })

@@ -5,12 +5,16 @@ from typing import Any
 import anyio
 import fastapi
 import redis.asyncio as redis
+import structlog
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from starlette.responses import Response
 
 from ..api.dependencies import get_current_superuser
 from ..core.utils.rate_limit import rate_limiter
@@ -208,6 +212,22 @@ def create_application(
 
     application = FastAPI(lifespan=lifespan, **kwargs)
     application.include_router(router)
+
+    @application.exception_handler(RequestValidationError)
+    async def log_request_validation_error(request: Request, exc: RequestValidationError) -> Response:
+        # Log loc/type/msg only. Never log `input` — it can contain private note text.
+        structlog.get_logger().warning(
+            "request_validation_failed",
+            errors=[
+                {
+                    "loc": [str(part) for part in error.get("loc", ())],
+                    "type": error.get("type"),
+                    "msg": error.get("msg"),
+                }
+                for error in exc.errors()
+            ],
+        )
+        return await request_validation_exception_handler(request, exc)
 
     # if isinstance(settings, ClientSideCacheSettings):
     #     application.add_middleware(ClientCacheMiddleware, max_age=settings.CLIENT_CACHE_MAX_AGE)

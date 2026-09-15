@@ -101,6 +101,21 @@ describe('useNotePersistenceStore', () => {
     expect(store.errorMessage).toContain('第 4 版')
   })
 
+  it('surfaces FastAPI validation failures when creating a note', async () => {
+    const store = useNotePersistenceStore()
+    mockedCreateNote.mockRejectedValueOnce(
+      new ApiError(422, {
+        detail: [{ loc: ['body', 'thought_model', 'note_id'], msg: 'String should have at least 1 character' }],
+      }),
+    )
+
+    await expect(store.save(input)).rejects.toBeInstanceOf(ApiError)
+    expect(store.status).toBe('error')
+    expect(store.errorMessage).toContain('保存内容未通过校验')
+    expect(store.errorMessage).toContain('thought_model.note_id')
+    expect(store.errorMessage).toContain('String should have at least 1 character')
+  })
+
   it('hydrates the note id and revision from a persisted note', async () => {
     const store = useNotePersistenceStore()
 

@@ -43,6 +43,8 @@ describe('compileInstructionPatch', () => {
         ops: [
           { op: 'update_node_text', node_id: 'n1', text: '结构必须回到笔记' },
           { op: 'delete_node', node_id: 'n2' },
+          { op: 'add_edge', id: 'e-new', source_node_id: 'n1', target_node_id: 'n2', type: 'supports' },
+          { op: 'delete_edge', edge_id: 'e1' },
           { op: 'move_anchor', anchor_id: 'a1', start_offset: 1, end_offset: 4 },
         ],
       },
@@ -58,6 +60,15 @@ describe('compileInstructionPatch', () => {
       ops: [
         { op: 'update_node_text', nodeId: 'n1', text: '结构必须回到笔记' },
         { op: 'delete_node', nodeId: 'n2' },
+        {
+          op: 'add_edge',
+          edgeId: 'e-new',
+          sourceNodeId: 'n1',
+          targetNodeId: 'n2',
+          type: 'supports',
+          label: null,
+        },
+        { op: 'delete_edge', edgeId: 'e1' },
         { op: 'move_anchor', anchorId: 'a1', startOffset: 1, endOffset: 4 },
       ],
     })

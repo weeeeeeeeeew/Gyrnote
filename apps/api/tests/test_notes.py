@@ -1,15 +1,17 @@
 import uuid as uuid_pkg
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from src.app.api.v1.notes import get_note_endpoint, save_note_version_endpoint
+from src.app.api.v1.notes import get_note_endpoint, list_notes_endpoint, save_note_version_endpoint
 from src.app.core.exceptions.http_exceptions import NotFoundException
 from src.app.models.note import Note
 from src.app.schemas.note import (
     NoteCreate,
+    NoteListItem,
     NoteVersionCreate,
     PersistedGraphLayout,
     PersistedThoughtModel,
@@ -22,6 +24,7 @@ from src.app.services.notes import (
     NoteRevisionConflictError,
     calculate_content_hash,
     create_note,
+    list_notes,
     save_note_version,
 )
 
@@ -100,6 +103,75 @@ def test_note_schema_rejects_non_tiptap_content_and_invalid_anchor() -> None:
             quote="原文",
             quote_hash="fnv1a32-v1:12345678",
         )
+
+
+def test_note_schema_accepts_draft_thought_model_without_note_id() -> None:
+    payload = NoteCreate(
+        title="未命名笔记",
+        content_json={"type": "doc", "content": [{"type": "paragraph", "attrs": {"blockId": "block-start"}}]},
+        thought_model=PersistedThoughtModel(
+            id="model-draft",
+            note_id="",
+            version=1,
+            title="未命名笔记",
+        ),
+    )
+
+    assert payload.thought_model is not None
+    assert payload.thought_model.note_id == ""
+    assert payload.thought_model.nodes == []
+
+
+def test_note_schema_accepts_omitted_thought_model_note_id() -> None:
+    payload = NoteCreate(
+        title="未命名笔记",
+        content_json={"type": "doc"},
+        thought_model=PersistedThoughtModel(
+            id="model-draft",
+            version=1,
+            title="未命名笔记",
+        ),
+    )
+
+    assert payload.thought_model is not None
+    assert payload.thought_model.note_id == ""
+
+
+def test_graph_layout_ignores_view_only_extra_position_keys() -> None:
+    layout = PersistedGraphLayout.model_validate(
+        {"node_positions": {"n1": {"x": 1, "y": 2, "z": 0}}, "edge_path_style": "default"}
+    )
+
+    assert layout.node_positions["n1"].model_dump() == {"x": 1.0, "y": 2.0}
+
+
+def test_note_schema_accepts_tiptap_list_document() -> None:
+    payload = NoteCreate(
+        title="未命名笔记",
+        content_json={
+            "type": "doc",
+            "content": [
+                {
+                    "type": "bulletList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "attrs": {"blockId": "block-item"},
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "attrs": {"blockId": "block-start"},
+                                    "content": [{"type": "text", "text": "新笔记正文"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert payload.content_json["type"] == "doc"
 
 
 def test_note_schema_rejects_duplicate_source_anchor_ids() -> None:
@@ -221,6 +293,27 @@ async def test_create_note_commits_when_embedding_fails(mock_db: Mock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_note_fail_closed_embeddings_saves_without_chunks(mock_db: Mock) -> None:
+    payload = create_payload_with_blocks()
+
+    async def fail_embed(_texts: list[str]) -> list[list[float]]:
+        raise EmbeddingProviderError("provider down")
+
+    result = await create_note(
+        mock_db,
+        owner_id=7,
+        payload=payload,
+        embed_texts=fail_embed,
+        fail_closed_embeddings=True,
+    )
+
+    assert result.revision == 1
+    assert result.chunk_index_error == "provider down"
+    mock_db.commit.assert_awaited_once()
+    mock_db.add_all.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_save_note_version_writes_chunks_for_new_version(mock_db: Mock) -> None:
     note = Note(owner_id=7, title="旧标题", content_json={"type": "doc"}, revision=1)
     note_result = Mock()
@@ -254,6 +347,26 @@ async def test_create_note_persists_confirmed_thought_model(mock_db: Mock) -> No
     assert [node.id for node in result.thought_model.nodes] == ["n1"]
     assert result.thought_model.nodes[0].text == "确认主张"
     assert result.current_version.thought_model_json["nodes"][0]["id"] == "n1"
+
+
+@pytest.mark.asyncio
+async def test_create_note_binds_draft_thought_model_to_new_note_id(mock_db: Mock) -> None:
+    payload = NoteCreate(
+        title="未命名笔记",
+        content_json={"type": "doc", "content": [{"type": "paragraph", "attrs": {"blockId": "block-start"}}]},
+        thought_model=PersistedThoughtModel(
+            id="model-draft",
+            note_id="",
+            version=1,
+            title="未命名笔记",
+        ),
+    )
+
+    result = await create_note(mock_db, owner_id=7, payload=payload)
+
+    assert result.thought_model.id == "model-draft"
+    assert result.thought_model.note_id == str(result.id)
+    assert result.thought_model.nodes == []
 
 
 @pytest.mark.asyncio
@@ -298,3 +411,54 @@ async def test_note_endpoints_map_not_found_and_conflict(mock_db: Mock, current_
 
     assert error.value.status_code == 409
     assert error.value.detail["current_revision"] == 4
+
+
+@pytest.mark.asyncio
+async def test_list_notes_returns_current_owner_summaries(mock_db: Mock) -> None:
+    note_id = uuid_pkg.uuid4()
+    note = Mock(
+        id=note_id,
+        title="秋招方向",
+        revision=3,
+        updated_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+    )
+    result = Mock()
+    result.scalars.return_value.all.return_value = [note]
+    mock_db.execute = AsyncMock(return_value=result)
+
+    items = await list_notes(mock_db, owner_id=7)
+
+    assert items == [
+        NoteListItem(id=note_id, title="秋招方向", revision=3, updated_at=note.updated_at),
+    ]
+    mock_db.execute.assert_awaited_once()
+
+
+def test_notes_collection_declares_get_so_directory_is_not_405() -> None:
+    from src.app.main import app
+
+    spec = app.openapi()
+    collection = spec["paths"].get("/api/v1/notes") or spec["paths"].get("/api/v1/notes/")
+
+    assert collection is not None
+    assert "get" in collection
+    assert "post" in collection
+
+
+@pytest.mark.asyncio
+async def test_list_notes_endpoint_uses_the_signed_in_owner(mock_db: Mock) -> None:
+    items = [
+        NoteListItem(
+            id=uuid_pkg.uuid4(),
+            title="仅当前用户",
+            revision=1,
+            updated_at=datetime(2026, 9, 14, 12, tzinfo=UTC),
+        )
+    ]
+    current_user_dict = {"id": 7, "username": "alice"}
+    with patch("src.app.api.v1.notes.list_notes", new=AsyncMock(return_value=items)) as listed:
+        result = await list_notes_endpoint(current_user_dict, mock_db)
+
+    assert result == items
+    listed.assert_awaited_once_with(mock_db, owner_id=7)
+

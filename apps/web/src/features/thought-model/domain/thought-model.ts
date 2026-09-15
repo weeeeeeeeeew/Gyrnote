@@ -70,6 +70,17 @@ export interface ThoughtModel {
   edges: ThoughtEdge[]
 }
 
+export function createBlankThoughtModel(title = '未命名笔记'): ThoughtModel {
+  return {
+    id: 'model-draft',
+    noteId: '',
+    version: 1,
+    title,
+    nodes: [],
+    edges: [],
+  }
+}
+
 export type CandidateGenerationStatus = 'idle' | 'generating' | 'ready' | 'error'
 
 /** Accept action result for UI feedback (M4 #2). */

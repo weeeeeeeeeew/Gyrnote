@@ -1,6 +1,7 @@
 import { ApiError, customFetch } from '@/api/http-client'
 
 import type { CandidateThoughtModel } from '../domain/thought-model'
+import { llmRequestHeaders } from './llm-settings'
 
 export interface CandidateCompilePayload {
   note_id: string
@@ -28,7 +29,7 @@ export async function compileCandidateModel(
 ): Promise<CandidateThoughtModel> {
   const response = await customFetch<ApiResponse<unknown>>('/api/v1/candidates/compile', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...llmRequestHeaders() },
     body: JSON.stringify(payload),
   })
 

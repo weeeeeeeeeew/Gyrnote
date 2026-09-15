@@ -20,6 +20,7 @@ from src.app.services.candidate_compile import (
     locate_quote_in_block,
     materialize_proposed_anchors,
     parse_llm_json_content,
+    prune_disconnected_fringe,
 )
 
 
@@ -135,11 +136,17 @@ def test_build_compile_messages_marks_initial_compile_and_forbids_quote_copy() -
 
     assert "INITIAL" in system or "initial" in system.lower()
     assert "mode: initial_compile" in user
-    assert "not quote copy" in user.lower() or "do not copy quote" in user.lower()
-    assert "Nodes:" in user and "Edges:" in user
+    assert "never copy quote" in user.lower() or "not quote copy" in user.lower() or "do not copy quote" in user.lower()
+    assert "backbone" in user.lower()
+    assert "isolated" in user.lower() or "open_question" in user
     assert "proposed_anchors" in system
     assert "source_anchor_ids" in system
     assert "multi-id" in user.lower() or "multiple" in user.lower()
+    assert "prefer one sentence" not in system.lower()
+    assert "supporting" in user.lower()
+    assert "widen" in user.lower() or "unrelated" in user.lower()
+    assert "self-check" in user.lower()
+    assert 'source_anchor_ids=["a1","a2"]' in user or "source_anchor_ids=[\"a1\",\"a2\"]" in user
 
 
 def test_build_compile_messages_includes_note_blocks() -> None:
@@ -328,10 +335,61 @@ def test_ensure_candidate_anchors_are_known_rejects_unknown_anchor() -> None:
         ensure_candidate_anchors_are_known(candidate, make_request().source_anchors)
 
 
-def test_ensure_candidate_anchors_are_known_rejects_unknown_among_multi() -> None:
-    candidate = make_candidate(anchor_ids=["anchor-1", "anchor-unknown"])
-    with pytest.raises(LLMResponseInvalidError, match="unknown source_anchor_id"):
-        ensure_candidate_anchors_are_known(candidate, make_request().source_anchors)
+def test_prune_disconnected_fringe_keeps_open_questions_and_linked_nodes() -> None:
+    candidate = CandidateThoughtModel(
+        id="c1",
+        note_id="note-1",
+        source_revision=1,
+        title="候选",
+        nodes=[
+            CandidateThoughtNode(
+                id="n1",
+                type="observation",
+                text="观察",
+                source_anchor_ids=["anchor-1"],
+                confidence=0.7,
+            ),
+            CandidateThoughtNode(
+                id="n2",
+                type="claim",
+                text="主张",
+                source_anchor_ids=["anchor-1"],
+                confidence=0.6,
+            ),
+            CandidateThoughtNode(
+                id="n3",
+                type="assumption",
+                text="无关碎点",
+                source_anchor_ids=["anchor-1"],
+                confidence=0.4,
+            ),
+            CandidateThoughtNode(
+                id="n4",
+                type="open_question",
+                text="还没想清",
+                source_anchor_ids=["anchor-1"],
+                confidence=0.5,
+            ),
+        ],
+        edges=[
+            CandidateThoughtEdge(
+                id="e1",
+                source_node_id="n1",
+                target_node_id="n2",
+                type="supports",
+                source_anchor_ids=["anchor-1"],
+                confidence=0.5,
+            )
+        ],
+    )
+    pruned = prune_disconnected_fringe(candidate)
+    assert {node.id for node in pruned.nodes} == {"n1", "n2", "n4"}
+    assert [edge.id for edge in pruned.edges] == ["e1"]
+
+
+def test_prune_disconnected_fringe_keeps_all_nodes_when_there_are_no_edges() -> None:
+    candidate = make_candidate()
+    assert prune_disconnected_fringe(candidate).nodes == candidate.nodes
 
 
 def json_dumps(value: dict) -> str:

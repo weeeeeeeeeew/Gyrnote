@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import type { CandidateThoughtModel } from '../domain/thought-model'
 import { displayThoughtTypeLabel } from '../domain/thought-model'
+import WorkbenchModal from './WorkbenchModal.vue'
 
 const props = defineProps<{
   candidate: CandidateThoughtModel | null
@@ -18,6 +19,11 @@ const emit = defineEmits<{
 
 const confirmedNodeIdSet = computed(() => new Set(props.confirmedNodeIds ?? []))
 const confirmedEdgeIdSet = computed(() => new Set(props.confirmedEdgeIds ?? []))
+const detailNodeId = ref<string | null>(null)
+const detailEdgeId = ref<string | null>(null)
+
+const detailNode = computed(() => props.candidate?.nodes.find((node) => node.id === detailNodeId.value) ?? null)
+const detailEdge = computed(() => props.candidate?.edges.find((edge) => edge.id === detailEdgeId.value) ?? null)
 
 function isNodeAccepted(nodeId: string): boolean {
   return confirmedNodeIdSet.value.has(nodeId)
@@ -26,6 +32,11 @@ function isNodeAccepted(nodeId: string): boolean {
 function isEdgeAccepted(edgeId: string): boolean {
   return confirmedEdgeIdSet.value.has(edgeId)
 }
+
+function closeDetail(): void {
+  detailNodeId.value = null
+  detailEdgeId.value = null
+}
 </script>
 
 <template>
@@ -33,7 +44,7 @@ function isEdgeAccepted(edgeId: string): boolean {
     <header class="candidate-review__header">
       <h2>候选模型（待审阅）</h2>
       <p class="candidate-review__hint">
-        候选只在此列表（接受后会从这里移除）。切换到「确认模型」查看图/大纲；不会整表覆盖。
+        候选只在此列表（接受后会从这里移除）。顶部「批准应用」仍逐条写入，锁定节点不会被覆盖；不会整表覆盖确认模型。
       </p>
     </header>
 
@@ -70,10 +81,15 @@ function isEdgeAccepted(edgeId: string): boolean {
         </p>
         <ol v-else class="candidate-review__list" aria-label="候选节点">
           <li v-for="node in candidate.nodes" :key="node.id">
-            <span class="node-type">{{ displayThoughtTypeLabel(node.type, node.label) }}</span>
-            <span>{{ node.text }}</span>
-            <span class="anchor-id">{{ node.sourceAnchorIds.join(', ') }}</span>
-            <span class="confidence">{{ node.confidence }}</span>
+            <button
+              type="button"
+              class="candidate-card"
+              :aria-label="`查看候选节点 ${node.id}`"
+              @click="detailNodeId = node.id"
+            >
+              <span class="node-type">{{ displayThoughtTypeLabel(node.type, node.label) }}</span>
+              <span class="candidate-card__text">{{ node.text }}</span>
+            </button>
             <button
               type="button"
               class="accept-action"
@@ -92,9 +108,15 @@ function isEdgeAccepted(edgeId: string): boolean {
         </p>
         <ol v-else class="candidate-review__list" aria-label="候选关系">
           <li v-for="edge in candidate.edges" :key="edge.id">
-            <span class="node-type">{{ displayThoughtTypeLabel(edge.type, edge.label) }}</span>
-            <span>{{ edge.sourceNodeId }} → {{ edge.targetNodeId }}</span>
-            <span class="confidence">{{ edge.confidence }}</span>
+            <button
+              type="button"
+              class="candidate-card"
+              :aria-label="`查看候选关系 ${edge.id}`"
+              @click="detailEdgeId = edge.id"
+            >
+              <span class="node-type">{{ displayThoughtTypeLabel(edge.type, edge.label) }}</span>
+              <span class="candidate-card__text">{{ edge.sourceNodeId }} → {{ edge.targetNodeId }}</span>
+            </button>
             <button
               type="button"
               class="accept-action"
@@ -108,14 +130,48 @@ function isEdgeAccepted(edgeId: string): boolean {
         </ol>
       </template>
     </template>
+
+    <WorkbenchModal
+      :open="detailNode !== null || detailEdge !== null"
+      size="tall"
+      :title="detailNode ? '候选节点' : '候选关系'"
+      @close="closeDetail"
+    >
+      <template v-if="detailNode">
+        <p><strong>{{ displayThoughtTypeLabel(detailNode.type, detailNode.label) }}</strong></p>
+        <p>{{ detailNode.text }}</p>
+        <p class="candidate-review__detail-meta">锚点 {{ detailNode.sourceAnchorIds.join(', ') }} · 置信 {{ detailNode.confidence }}</p>
+        <button
+          type="button"
+          class="accept-action"
+          :disabled="isNodeAccepted(detailNode.id)"
+          @click="emit('acceptNode', detailNode.id); closeDetail()"
+        >
+          {{ isNodeAccepted(detailNode.id) ? '已接受' : '接受此节点' }}
+        </button>
+      </template>
+      <template v-else-if="detailEdge">
+        <p><strong>{{ displayThoughtTypeLabel(detailEdge.type, detailEdge.label) }}</strong></p>
+        <p>{{ detailEdge.sourceNodeId }} → {{ detailEdge.targetNodeId }}</p>
+        <p class="candidate-review__detail-meta">置信 {{ detailEdge.confidence }}</p>
+        <button
+          type="button"
+          class="accept-action"
+          :disabled="isEdgeAccepted(detailEdge.id)"
+          @click="emit('acceptEdge', detailEdge.id); closeDetail()"
+        >
+          {{ isEdgeAccepted(detailEdge.id) ? '已接受' : '接受此关系' }}
+        </button>
+      </template>
+    </WorkbenchModal>
   </section>
 </template>
 
 <style scoped>
 .candidate-review {
-  padding: 20px 28px 8px;
-  border-bottom: 1px solid #deddd4;
-  background: #f7f3ea;
+  padding: 14px 16px 16px;
+  border: 0;
+  background: var(--gyre-mist);
 }
 
 .candidate-review__header {
@@ -173,11 +229,48 @@ function isEdgeAccepted(edgeId: string): boolean {
 
 .candidate-review__list :deep(li) {
   display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid #deddd4;
-  border-radius: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--gyre-line);
+  border-radius: 10px;
   background: #ffffff;
+}
+
+.candidate-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.candidate-card__text {
+  overflow: hidden;
+  color: var(--gyre-ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accept-all,
+.candidate-review__detail-meta {
+  font-size: 12px;
+}
+
+.accept-all {
+  padding: 5px 10px;
+  border: 1px solid var(--gyre);
+  border-radius: 8px;
+  color: #ffffff;
+  font: inherit;
+  background: var(--gyre);
+  cursor: pointer;
 }
 
 .candidate-review__list :deep(.node-type) {

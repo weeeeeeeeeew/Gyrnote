@@ -58,6 +58,20 @@ describe('useThoughtModelWorkbenchStore', () => {
     expect(workbench.selectedEdge?.id).toBe('edge-evidence-supports-claim')
   })
 
+  it('clears node and edge selection together', () => {
+    const workbench = useThoughtModelWorkbenchStore()
+
+    workbench.selectNode('claim-product-engineer')
+    workbench.clearSelection()
+    expect(workbench.selectedNode).toBeNull()
+    expect(workbench.selectedEdge).toBeNull()
+
+    workbench.selectEdge('edge-evidence-supports-claim')
+    workbench.clearSelection()
+    expect(workbench.selectedNode).toBeNull()
+    expect(workbench.selectedEdge).toBeNull()
+  })
+
   it('does not update an edge type when no edge is selected', () => {
     const workbench = useThoughtModelWorkbenchStore()
 
@@ -99,9 +113,10 @@ describe('useThoughtModelWorkbenchStore', () => {
     })
     expect(workbench.selectedNode?.sourceAnchorIds).toEqual(['anchor-first'])
     expect(workbench.selectedSourceAnchor).toEqual({ id: 'anchor-first', ...anchor })
+    expect(workbench.selectedSourceAnchors).toEqual([{ id: 'anchor-first', ...anchor }])
   })
 
-  it('replaces an anchor and removes the unreferenced local record', () => {
+  it('appends another source anchor instead of replacing the set', () => {
     const workbench = useThoughtModelWorkbenchStore()
 
     workbench.selectNode('claim-product-engineer')
@@ -111,8 +126,34 @@ describe('useThoughtModelWorkbenchStore', () => {
       'anchor-second',
     )
 
-    expect(workbench.selectedNode?.sourceAnchorIds).toEqual(['anchor-second'])
-    expect(workbench.sourceAnchors.map((anchor) => anchor.id)).toEqual(['anchor-second'])
+    expect(workbench.selectedNode?.sourceAnchorIds).toEqual(['anchor-first', 'anchor-second'])
+    expect(workbench.selectedSourceAnchors.map((item) => item.id)).toEqual([
+      'anchor-first',
+      'anchor-second',
+    ])
+    expect(workbench.sourceAnchors.map((item) => item.id)).toEqual(['anchor-first', 'anchor-second'])
+    expect(workbench.focusedSourceAnchor?.id).toBe('anchor-second')
+  })
+
+  it('exposes every bound source anchor when a node is selected', () => {
+    const workbench = useThoughtModelWorkbenchStore()
+    workbench.selectNode('claim-product-engineer')
+    workbench.attachSourceAnchorToSelectedNode(createAnchor(), 'anchor-first')
+    workbench.attachSourceAnchorToSelectedNode(
+      createAnchor({ quote: '第二处', quoteHash: hashSourceQuote('第二处') }),
+      'anchor-second',
+    )
+
+    workbench.clearSelection()
+    workbench.selectNode('claim-product-engineer')
+
+    expect(workbench.selectedSourceAnchors.map((item) => item.id)).toEqual([
+      'anchor-first',
+      'anchor-second',
+    ])
+    expect(workbench.focusedSourceAnchorId).toBe('anchor-first')
+    expect(workbench.focusSourceAnchor('anchor-second')).toBe(true)
+    expect(workbench.focusedSourceAnchor?.id).toBe('anchor-second')
   })
 
   it('replaces local anchors with a persisted note snapshot', () => {
@@ -142,6 +183,20 @@ describe('useThoughtModelWorkbenchStore', () => {
     expect(workbench.candidateStatus).toBe('ready')
     expect(workbench.candidateModel).toEqual(candidate)
     expect(workbench.model).toEqual(originalModel)
+  })
+
+  it('clears confirmed nodes before a live compile while keeping note identity', () => {
+    const workbench = useThoughtModelWorkbenchStore()
+    workbench.syncModelNoteIdentity('note-live', '秋招投递计划')
+    expect(workbench.model.nodes.length).toBeGreaterThan(0)
+
+    workbench.resetConfirmedGraphForCompile()
+
+    expect(workbench.model.nodes).toEqual([])
+    expect(workbench.model.edges).toEqual([])
+    expect(workbench.model.noteId).toBe('note-live')
+    expect(workbench.model.title).toBe('秋招投递计划')
+    expect(workbench.candidateModel).toBeNull()
   })
 
   it('moves to error when the candidate input is not bound to a valid revision', () => {
@@ -306,6 +361,38 @@ describe('useThoughtModelWorkbenchStore', () => {
 
       expect(workbench.model).toEqual(confirmedAfterAccept)
       expect(workbench.candidateModel?.sourceRevision).toBe(2)
+    })
+  })
+
+  describe('acceptAllCandidates', () => {
+    it('accepts remaining nodes then edges without overwriting locked nodes', () => {
+      const workbench = useThoughtModelWorkbenchStore()
+      workbench.replaceSourceAnchors([{ id: 'anchor-1', ...createAnchor({ quote: '候选原文' }) }])
+      workbench.generateFixtureCandidate('note-1', 1)
+
+      const result = workbench.acceptAllCandidates()
+
+      expect(result.ok).toBe(true)
+      expect(result.message).toContain('2 个节点')
+      expect(result.message).toContain('1 条关系')
+      expect(workbench.candidateModel?.nodes).toEqual([])
+      expect(workbench.candidateModel?.edges).toEqual([])
+      expect(workbench.model.nodes.some((node) => node.id === 'candidate-observation-1')).toBe(true)
+    })
+  })
+
+  describe('discardCandidate', () => {
+    it('clears the candidate list without writing the confirmed model', () => {
+      const workbench = useThoughtModelWorkbenchStore()
+      workbench.replaceSourceAnchors([{ id: 'anchor-1', ...createAnchor({ quote: '候选原文' }) }])
+      workbench.generateFixtureCandidate('note-1', 1)
+      const confirmedCount = workbench.model.nodes.length
+
+      workbench.discardCandidate()
+
+      expect(workbench.candidateModel).toBeNull()
+      expect(workbench.candidateStatus).toBe('idle')
+      expect(workbench.model.nodes).toHaveLength(confirmedCount)
     })
   })
 
@@ -601,7 +688,7 @@ describe('useThoughtModelWorkbenchStore', () => {
       }
       expect(workbench.sourceAnchors).toHaveLength(1)
       expect(workbench.sourceAnchors[0]?.id).toMatch(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
       )
       expect(workbench.sourceAnchors[0]).toMatchObject({
         blockId: 'block-intro',
@@ -710,7 +797,7 @@ describe('useThoughtModelWorkbenchStore', () => {
       expect(workbench.sourceAnchors).toHaveLength(2)
       expect(
         workbench.sourceAnchors.every((anchor) =>
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
             anchor.id,
           ),
         ),
@@ -782,13 +869,13 @@ describe('useThoughtModelWorkbenchStore', () => {
       const beforeNodes = workbench.model.nodes.map((node) => node.id)
 
       expect(workbench.loadFixtureModelPatch()).toBe(true)
-      expect(workbench.pendingPatch?.ops.length).toBeGreaterThan(0)
+      expect(workbench.pendingNoteChangePatch?.ops.length).toBeGreaterThan(0)
       expect(workbench.model.nodes.map((node) => node.id)).toEqual(beforeNodes)
     })
 
     it('applies a delete_node patch into confirmed model only after approve', () => {
       const workbench = useThoughtModelWorkbenchStore()
-      workbench.pendingPatch = {
+      workbench.pendingNoteChangePatch = {
         id: 'patch-delete-only',
         noteId: workbench.model.noteId,
         baseModelVersion: workbench.model.version,
@@ -796,8 +883,8 @@ describe('useThoughtModelWorkbenchStore', () => {
         ops: [{ op: 'delete_node', nodeId: 'evidence-shared-workflow' }],
       }
 
-      expect(workbench.applyPendingPatch()).toBe(true)
-      expect(workbench.pendingPatch).toBeNull()
+      expect(workbench.acceptRemainingNoteChangeOps()).toBe(true)
+      expect(workbench.pendingNoteChangePatch).toBeNull()
       expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(
         false,
       )
@@ -819,14 +906,14 @@ describe('useThoughtModelWorkbenchStore', () => {
 
       const beforeCount = workbench.model.nodes.length
       expect(workbench.loadPatchFromAnchorStatuses({ 'anchor-gone': 'invalid' })).toBe(true)
-      expect(workbench.pendingPatch?.id).not.toBe(workbench.model.id)
-      expect(workbench.pendingPatch?.ops).toEqual([
+      expect(workbench.pendingNoteChangePatch?.id).not.toBe(workbench.model.id)
+      expect(workbench.pendingNoteChangePatch?.ops).toEqual([
         { op: 'delete_node', nodeId: 'evidence-shared-workflow' },
       ])
       expect(workbench.model.nodes).toHaveLength(beforeCount)
 
-      expect(workbench.applyPendingPatch()).toBe(true)
-      expect(workbench.pendingPatch).toBeNull()
+      expect(workbench.acceptRemainingNoteChangeOps()).toBe(true)
+      expect(workbench.pendingNoteChangePatch).toBeNull()
       expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(
         false,
       )
@@ -838,7 +925,7 @@ describe('useThoughtModelWorkbenchStore', () => {
       workbench.attachSourceAnchorToSelectedNode(createAnchor(), 'anchor-drift')
 
       expect(workbench.loadPatchFromAnchorStatuses({ 'anchor-drift': 'drifted' })).toBe(false)
-      expect(workbench.pendingPatch).toBeNull()
+      expect(workbench.pendingNoteChangePatch).toBeNull()
       expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(
         true,
       )
@@ -855,8 +942,8 @@ describe('useThoughtModelWorkbenchStore', () => {
           'anchor-drift': { status: 'drifted', startOffset: 3, endOffset: 5 },
         }),
       ).toBe(true)
-      expect(workbench.pendingPatch?.id).not.toBe(workbench.model.id)
-      expect(workbench.pendingPatch?.ops).toEqual([
+      expect(workbench.pendingNoteChangePatch?.id).not.toBe(workbench.model.id)
+      expect(workbench.pendingNoteChangePatch?.ops).toEqual([
         { op: 'move_anchor', anchorId: 'anchor-drift', startOffset: 3, endOffset: 5 },
       ])
       expect(workbench.model.nodes.map((node) => node.id)).toEqual(beforeNodes)
@@ -866,8 +953,8 @@ describe('useThoughtModelWorkbenchStore', () => {
         endOffset: 2,
       })
 
-      expect(workbench.applyPendingPatch()).toBe(true)
-      expect(workbench.pendingPatch).toBeNull()
+      expect(workbench.acceptRemainingNoteChangeOps()).toBe(true)
+      expect(workbench.pendingNoteChangePatch).toBeNull()
       expect(workbench.sourceAnchors[0]).toMatchObject({
         id: 'anchor-drift',
         startOffset: 3,
@@ -880,7 +967,7 @@ describe('useThoughtModelWorkbenchStore', () => {
       const workbench = useThoughtModelWorkbenchStore()
       workbench.selectNode('evidence-shared-workflow')
       workbench.attachSourceAnchorToSelectedNode(createAnchor(), 'anchor-move')
-      workbench.pendingPatch = {
+      workbench.pendingNoteChangePatch = {
         id: 'patch-move',
         noteId: workbench.model.noteId,
         baseModelVersion: workbench.model.version,
@@ -888,7 +975,7 @@ describe('useThoughtModelWorkbenchStore', () => {
         ops: [{ op: 'move_anchor', anchorId: 'anchor-move', startOffset: 2, endOffset: 5 }],
       }
 
-      expect(workbench.applyPendingPatch()).toBe(true)
+      expect(workbench.acceptRemainingNoteChangeOps()).toBe(true)
       expect(workbench.sourceAnchors[0]).toMatchObject({
         id: 'anchor-move',
         startOffset: 2,
@@ -897,6 +984,54 @@ describe('useThoughtModelWorkbenchStore', () => {
       expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(
         true,
       )
+    })
+
+    it('keeps instruction and note-change patches on separate lanes', async () => {
+      const workbench = useThoughtModelWorkbenchStore()
+      workbench.pendingInstructionPatch = {
+        id: 'patch-nl',
+        noteId: workbench.model.noteId,
+        baseModelVersion: workbench.model.version,
+        reason: 'nl',
+        ops: [{ op: 'update_node_text', nodeId: 'claim-product-engineer', text: '结构必须回到笔记' }],
+      }
+      workbench.selectNode('evidence-shared-workflow')
+      workbench.attachSourceAnchorToSelectedNode(createAnchor(), 'anchor-gone')
+
+      expect(workbench.loadPatchFromAnchorStatuses({ 'anchor-gone': 'invalid' })).toBe(true)
+      expect(workbench.pendingInstructionPatch?.id).toBe('patch-nl')
+      expect(workbench.pendingNoteChangePatch?.ops).toEqual([
+        { op: 'delete_node', nodeId: 'evidence-shared-workflow' },
+      ])
+    })
+
+    it('accepts a single note-change op without applying the rest', () => {
+      const workbench = useThoughtModelWorkbenchStore()
+      workbench.selectNode('evidence-shared-workflow')
+      workbench.attachSourceAnchorToSelectedNode(createAnchor({ quote: '原文' }), 'anchor-drift')
+      workbench.pendingNoteChangePatch = {
+        id: 'patch-two',
+        noteId: workbench.model.noteId,
+        baseModelVersion: workbench.model.version,
+        reason: 'two ops',
+        ops: [
+          { op: 'move_anchor', anchorId: 'anchor-drift', startOffset: 3, endOffset: 5 },
+          { op: 'delete_node', nodeId: 'evidence-shared-workflow' },
+        ],
+      }
+
+      expect(workbench.acceptNoteChangeOp(0)).toBe(true)
+      expect(workbench.sourceAnchors[0]).toMatchObject({
+        id: 'anchor-drift',
+        startOffset: 3,
+        endOffset: 5,
+      })
+      expect(workbench.model.nodes.some((node) => node.id === 'evidence-shared-workflow')).toBe(
+        true,
+      )
+      expect(workbench.pendingNoteChangePatch?.ops).toEqual([
+        { op: 'delete_node', nodeId: 'evidence-shared-workflow' },
+      ])
     })
   })
 })

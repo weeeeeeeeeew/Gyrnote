@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useAuthStore } from '@/features/auth/stores/auth'
+import {
+  clearLlmLocalSettings,
+  writeLlmLocalSettings,
+} from '@/features/thought-model/api/llm-settings'
 
-import { createNote, getNote, saveNoteVersion } from './notes-api'
+import { createNote, getNote, listNotes, saveNoteVersion } from './notes-api'
 
 const emptyThoughtModel = {
   id: 'model-1',
@@ -37,6 +41,7 @@ function response(data: unknown, status = 200) {
 describe('notes api', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    clearLlmLocalSettings()
   })
 
   it('creates a note with the current bearer token', async () => {
@@ -45,7 +50,11 @@ describe('notes api', () => {
     const fetchMock = vi.fn().mockResolvedValue(response({ id: 'note-1', revision: 1 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(createNote(payload)).resolves.toEqual({ id: 'note-1', revision: 1 })
+    await expect(createNote(payload)).resolves.toEqual({
+      id: 'note-1',
+      revision: 1,
+      chunkIndexError: null,
+    })
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/notes',
@@ -60,6 +69,27 @@ describe('notes api', () => {
     expect(new Headers(request.headers).get('Authorization')).toBe('Bearer access-token')
   })
 
+  it('forwards local embedding credentials on create and save', async () => {
+    writeLlmLocalSettings({
+      apiKey: '',
+      baseUrl: '',
+      model: '',
+      embeddingApiKey: 'sk-embed',
+      embeddingBaseUrl: 'https://embed.example/v1',
+      embeddingModel: 'text-embedding-3-small',
+    })
+    const fetchMock = vi.fn().mockResolvedValue(response({ id: 'note-1', revision: 1 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createNote(payload)
+
+    const headers = new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers)
+    expect(headers.get('X-Gyrnote-Embedding-Key')).toBe('sk-embed')
+    expect(headers.get('X-Gyrnote-Embedding-Base-Url')).toBe('https://embed.example/v1')
+    expect(headers.get('X-Gyrnote-Embedding-Model')).toBe('text-embedding-3-small')
+    expect(headers.get('X-Gyrnote-Llm-Key')).toBeNull()
+  })
+
   it('posts a new immutable version under the note id', async () => {
     const fetchMock = vi.fn().mockResolvedValue(response({ id: 'note-1', revision: 2 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -68,6 +98,7 @@ describe('notes api', () => {
     await expect(saveNoteVersion('note-1', versionPayload)).resolves.toEqual({
       id: 'note-1',
       revision: 2,
+      chunkIndexError: null,
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/notes/note-1/versions',
@@ -114,6 +145,33 @@ describe('notes api', () => {
     })
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/notes/note-1',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
+  it('lists note summaries for the current owner', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      response([
+        {
+          id: 'note-1',
+          title: '秋招方向',
+          revision: 2,
+          updated_at: '2026-09-14T12:00:00+00:00',
+        },
+      ]),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(listNotes()).resolves.toEqual([
+      {
+        id: 'note-1',
+        title: '秋招方向',
+        revision: 2,
+        updated_at: '2026-09-14T12:00:00+00:00',
+      },
+    ])
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/notes',
       expect.objectContaining({ method: 'GET' }),
     )
   })

@@ -15,9 +15,10 @@ from ..schemas.candidate import (
     CompileSourceAnchor,
     ProposedSourceAnchor,
 )
+from .llm_runtime import LlmNotConfiguredError, resolve_llm_runtime
 
 CANDIDATE_JSON_SCHEMA_HINT = """
-Return ONLY JSON (no markdown):
+Return ONLY JSON (no markdown). Internally sketch a 3-7 node backbone first, then fill JSON.
 {
   "id": string, "note_id": string, "source_revision": number, "title": string,
   "proposed_anchors": [{"id": string, "block_id": string, "quote": string}],
@@ -30,28 +31,53 @@ Return ONLY JSON (no markdown):
 nodeType: question|concept|observation|claim|evidence|assumption|counterpoint|decision|open_question|action|custom
 edgeType: supports|challenges|depends_on|qualifies|explains|leads_to|answers|tests|custom
 Prefer core enums; use custom only when none fit, and then label is required (short name).
-For non-custom types set label to null.
+For non-custom types set label to a 1-10 char title or null.
 proposed_anchors.block_id MUST be one of the provided note block ids.
-proposed_anchors.quote MUST be an exact contiguous substring of that block's text (prefer one sentence / one clause; stay inside one block).
+proposed_anchors.quote MUST be an exact contiguous substring of that block's text
+  (stay inside one block; copy the supporting span, not a token-sized excerpt).
 proposed_anchors.id MUST be a short local code such as "a1"/"a2" (do NOT invent UUIDs; server will remap).
 Each node.source_anchor_ids MUST be non-empty; each id is a user anchor id OR a proposed_anchors.id.
-A node MAY cite multiple anchors across different blocks (discontinuous evidence OK).
+If the node's idea is supported in more than one sentence/clause/block, source_anchor_ids MUST list ALL of those spans (typically 2-4). One id is only correct when a single contiguous span is the whole support.
 Do not invent block ids or anchor ids outside those sets.
 """.strip()
 
-# 首次编译（initial compile）：噪声原文证据 → 候选结构。不是增量调图。
+# 首次编译（initial compile）：抽思考骨架，不是第二份正文，也不是增量调图。
 INITIAL_COMPILE_RULES = """
 mode=initial_compile
 
+The graph is a thinking skeleton. Do not cover every sentence. Uncovered note text is OK.
+
+Stage 1 (internal only, do not output prose): pick 3-7 backbone nodes
+  (core question / claim / decision / action). Sketch only explicit links.
+
+Stage 2 (JSON only): add a few support nodes (evidence, assumption, counterpoint)
+  that attach to the backbone. Then output the schema JSON. Self-check: drop
+  decorative edges and isolated nodes except open_question.
+
+Nodes: one independent idea each; never copy quote; do not split one sentence
+  into 3-4 nodes; prefer 8-24 Chinese chars; node ids may be n1,n2,...
+  label = short title (1-10 chars) or null.
+Edges: only explicit logic; unidirectional; no decorative links.
+  Prefer reading order: question/observation -> assumption/claim -> evidence
+  -> decision/action. Endpoints must be your node ids.
+  counterpoint only challenges a claim; evidence only supports a claim or tests an assumption.
+Isolated: omit a node with no edge unless type=open_question.
+
 Evidence: prefer proposing anchors from note blocks when user anchors are sparse/absent.
   quote must copy exact contiguous text from one provided block; never invent wording.
-  use multiple proposed_anchors when one idea needs cross-block or discontinuous evidence.
+  Anchors are the RAG fact spans. If you abstract several clauses into node.text,
+  you MUST still attach every supporting span (multiple proposed_anchors).
+  Relevant coverage: include spans that actually support THIS node.
+  Do not widen into unrelated sentences just to cover more of the note.
+  Do not pick one short highlight when a longer contiguous supporting passage exists
+  in the same block — extend the quote to that supporting passage only.
+  Unrelated paragraphs stay unanchored. Cross-block / discontinuous evidence => multiple anchors.
   proposed_anchors.id = short codes a1,a2,... (not UUIDs).
-Nodes: one idea each; text=short paraphrase (not quote copy); strip filler;
-  prefer ~8-40 Chinese chars; split condition vs outcome into separate nodes when both matter.
-  node ids may be short codes n1,n2,...
-Edges: only clear logic; endpoints must be your node ids.
-Anchoring: node.source_anchor_ids (non-empty) cite user and/or proposed anchors; multi-id OK.
+Anchoring: node.source_anchor_ids (non-empty) cite user and/or proposed anchors; multi-id is the normal case, not a rare exception.
+Mandatory self-check before JSON: for each claim/evidence/decision/assumption, count supporting
+  sentences in note_blocks. If count >= 2, that node MUST have >= 2 source_anchor_ids.
+  Bad: node.text abstracts two paragraphs, source_anchor_ids=["a1"].
+  Good: proposed_anchors a1+a2 from those paragraphs, source_anchor_ids=["a1","a2"].
 Empty: no note blocks and no user anchors => empty proposed_anchors/nodes/edges.
 title: model summary, not a pasted quote.
 confidence: 0..1 (higher only if explicit in evidence).
@@ -62,7 +88,7 @@ class CandidateCompileError(Exception):
     """Raised when candidate compilation fails before writing any confirmed model."""
 
 
-class LLMNotConfiguredError(CandidateCompileError):
+class LLMNotConfiguredError(CandidateCompileError, LlmNotConfiguredError):
     pass
 
 
@@ -264,21 +290,45 @@ def _empty_candidate(request: CandidateCompileRequest) -> CandidateThoughtModel:
     )
 
 
-async def call_openai_compatible_chat(messages: list[dict[str, str]]) -> str:
-    if not settings.LLM_ENABLED:
-        raise LLMNotConfiguredError("LLM compilation is disabled")
-    api_key = settings.LLM_API_KEY.get_secret_value() if settings.LLM_API_KEY is not None else ""
-    if not api_key.strip():
-        raise LLMNotConfiguredError("LLM_API_KEY is not configured")
+def prune_disconnected_fringe(candidate: CandidateThoughtModel) -> CandidateThoughtModel:
+    """Drop isolated non-open_question nodes when the graph already has edges."""
+    if not candidate.edges:
+        return candidate
+    connected: set[str] = set()
+    for edge in candidate.edges:
+        connected.add(edge.source_node_id)
+        connected.add(edge.target_node_id)
+    keep_ids = {
+        node.id
+        for node in candidate.nodes
+        if node.id in connected or node.type == "open_question"
+    }
+    nodes = [node for node in candidate.nodes if node.id in keep_ids]
+    node_ids = {node.id for node in nodes}
+    edges = [
+        edge
+        for edge in candidate.edges
+        if edge.source_node_id in node_ids and edge.target_node_id in node_ids
+    ]
+    return candidate.model_copy(update={"nodes": nodes, "edges": edges})
 
-    base_url = settings.LLM_BASE_URL.rstrip("/")
+
+async def call_openai_compatible_chat(
+    messages: list[dict[str, str]],
+    llm_override: dict[str, Any] | None = None,
+) -> str:
+    try:
+        api_key, base_url, model = resolve_llm_runtime(llm_override)
+    except LlmNotConfiguredError as exc:
+        raise LLMNotConfiguredError(str(exc)) from exc
+
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body: dict[str, Any] = {
-        "model": settings.LLM_MODEL,
+        "model": model,
         "messages": messages,
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
@@ -309,13 +359,16 @@ async def call_openai_compatible_chat(messages: list[dict[str, str]]) -> str:
     return content
 
 
-async def compile_candidate_model(request: CandidateCompileRequest) -> CandidateThoughtModel:
+async def compile_candidate_model(
+    request: CandidateCompileRequest,
+    llm_override: dict[str, Any] | None = None,
+) -> CandidateThoughtModel:
     has_blocks = any(block.text.strip() for block in request.note_blocks)
     if not has_blocks and not request.source_anchors:
         return _empty_candidate(request)
 
     messages = build_compile_messages(request)
-    raw_content = await call_openai_compatible_chat(messages)
+    raw_content = await call_openai_compatible_chat(messages, llm_override)
     raw_object = parse_llm_json_content(raw_content)
 
     proposed_anchors, id_remap = materialize_proposed_anchors(
@@ -341,4 +394,5 @@ async def compile_candidate_model(request: CandidateCompileRequest) -> Candidate
             for anchor in candidate.proposed_anchors
         ],
     ]
-    return ensure_candidate_anchors_are_known(candidate, allowed)
+    candidate = ensure_candidate_anchors_are_known(candidate, allowed)
+    return prune_disconnected_fringe(candidate)

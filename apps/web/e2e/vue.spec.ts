@@ -1,6 +1,16 @@
 import { expect, test, type Page } from '@playwright/test'
 
 async function signIn(page: Page) {
+  await page.route('**/api/v1/notes', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '[]',
+      })
+    }
+    return route.continue()
+  })
   await page.route('**/api/v1/refresh', (route) =>
     route.fulfill({
       status: 401,
@@ -23,6 +33,16 @@ async function signIn(page: Page) {
   await expect(page).toHaveURL('/')
 }
 
+test('opens a blank workspace with a note library instead of the demo note', async ({ page }) => {
+  await signIn(page)
+
+  await expect(page.getByRole('complementary', { name: '笔记目录' })).toBeVisible()
+  await expect(page.getByText('还没有保存过的笔记。')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '未命名笔记' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '编译' })).toBeVisible()
+  await expect(page.locator('.workbench__mark')).toHaveAttribute('src', '/icon.png')
+})
+
 test('displays the backend health status', async ({ page }) => {
   await signIn(page)
 
@@ -34,6 +54,7 @@ test('edits a thought node and relationship across outline and graph views', asy
   const updatedNodeText = '以可解释的前端交互为项目锚点'
 
   await signIn(page)
+  await page.getByRole('button', { name: '从示例开始' }).click()
 
   await page.getByRole('button', { name: '大纲', exact: true }).click()
   const nodeOutline = page.getByRole('list', { name: '思维模型节点' })

@@ -1,6 +1,6 @@
 import type { IdentifiedSourceAnchor } from '@/features/source-anchors/domain/source-anchor'
 
-import type { ThoughtModel, ThoughtNode } from './thought-model'
+import type { ThoughtEdgeType, ThoughtModel, ThoughtNode } from './thought-model'
 
 export type ModelPatchOp =
   | {
@@ -17,6 +17,18 @@ export type ModelPatchOp =
       anchorId: string
       startOffset: number
       endOffset: number
+    }
+  | {
+      op: 'add_edge'
+      edgeId: string
+      sourceNodeId: string
+      targetNodeId: string
+      type: ThoughtEdgeType
+      label: string | null
+    }
+  | {
+      op: 'delete_edge'
+      edgeId: string
     }
 
 export interface ModelPatch {
@@ -87,6 +99,57 @@ export function applyModelPatch(model: ThoughtModel, patch: ModelPatch): ApplyMo
   }
 }
 
+export type ApplyConfirmedPatchOpsResult =
+  | { ok: true; model: ThoughtModel; anchors: IdentifiedSourceAnchor[]; appliedOpCount: number }
+  | { ok: false; error: string }
+
+/** Apply selected ops to a confirmed model + its source anchors. Never mutates inputs. */
+export function applyConfirmedPatchOps(
+  model: ThoughtModel,
+  anchors: readonly IdentifiedSourceAnchor[],
+  ops: readonly ModelPatchOp[],
+): ApplyConfirmedPatchOpsResult {
+  if (ops.length === 0) {
+    return { ok: false, error: 'patch must contain at least one op' }
+  }
+
+  const moveOps = ops.filter(
+    (op): op is Extract<ModelPatchOp, { op: 'move_anchor' }> => op.op === 'move_anchor',
+  )
+  const modelOps = ops.filter((op) => op.op !== 'move_anchor')
+
+  let nextAnchors = anchors.map((anchor) => ({ ...anchor }))
+  if (moveOps.length > 0) {
+    const moved = applyMoveAnchorOps(nextAnchors, moveOps)
+    if (!moved.ok) {
+      return { ok: false, error: moved.error }
+    }
+    nextAnchors = moved.anchors
+  }
+
+  let nextModel = model
+  if (modelOps.length > 0) {
+    const result = applyModelPatch(model, {
+      id: 'applied-ops',
+      noteId: model.noteId,
+      baseModelVersion: model.version,
+      reason: 'applied ops',
+      ops: [...modelOps],
+    })
+    if (!result.ok) {
+      return { ok: false, error: result.errors.join('；') }
+    }
+    nextModel = result.model
+  }
+
+  return {
+    ok: true,
+    model: nextModel,
+    anchors: nextAnchors,
+    appliedOpCount: ops.length,
+  }
+}
+
 type OpStepResult = { ok: true; model: ThoughtModel } | { ok: false; error: string }
 
 function applyOneOp(model: ThoughtModel, op: ModelPatchOp): OpStepResult {
@@ -95,9 +158,89 @@ function applyOneOp(model: ThoughtModel, op: ModelPatchOp): OpStepResult {
       return applyUpdateNodeTextOp(model, op)
     case 'delete_node':
       return applyDeleteNodeOp(model, op)
+    case 'add_edge':
+      return applyAddEdgeOp(model, op)
+    case 'delete_edge':
+      return applyDeleteEdgeOp(model, op)
     case 'move_anchor':
       // SourceAnchor lives beside the model; store applies these via applyMoveAnchorOps.
       return { ok: true, model }
+  }
+}
+
+function applyAddEdgeOp(
+  model: ThoughtModel,
+  op: Extract<ModelPatchOp, { op: 'add_edge' }>,
+): OpStepResult {
+  if (op.sourceNodeId === op.targetNodeId) {
+    return { ok: false, error: 'add_edge cannot be a self-loop' }
+  }
+  const source = model.nodes.find((node) => node.id === op.sourceNodeId)
+  const target = model.nodes.find((node) => node.id === op.targetNodeId)
+  if (!source || !target) {
+    return { ok: false, error: 'node not found' }
+  }
+  if (source.reviewStatus === 'locked' || target.reviewStatus === 'locked') {
+    return { ok: false, error: 'node is locked' }
+  }
+  if (model.edges.some((edge) => edge.id === op.edgeId)) {
+    return { ok: false, error: `edge already exists: ${op.edgeId}` }
+  }
+  if (
+    model.edges.some(
+      (edge) =>
+        edge.sourceNodeId === op.sourceNodeId &&
+        edge.targetNodeId === op.targetNodeId &&
+        edge.type === op.type,
+    )
+  ) {
+    return { ok: false, error: 'duplicate edge' }
+  }
+  const label = op.type === 'custom' ? op.label?.trim() || null : null
+  if (op.type === 'custom' && !label) {
+    return { ok: false, error: 'custom edges require a label' }
+  }
+  return {
+    ok: true,
+    model: {
+      ...model,
+      edges: [
+        ...model.edges,
+        {
+          id: op.edgeId,
+          sourceNodeId: op.sourceNodeId,
+          targetNodeId: op.targetNodeId,
+          type: op.type,
+          label,
+          origin: 'user_modified',
+          explicitness: 'explicit',
+          reviewStatus: 'confirmed',
+          confidence: null,
+        },
+      ],
+    },
+  }
+}
+
+function applyDeleteEdgeOp(
+  model: ThoughtModel,
+  op: Extract<ModelPatchOp, { op: 'delete_edge' }>,
+): OpStepResult {
+  const edge = model.edges.find((item) => item.id === op.edgeId)
+  if (!edge) {
+    return { ok: false, error: `edge not found: ${op.edgeId}` }
+  }
+  const source = model.nodes.find((node) => node.id === edge.sourceNodeId)
+  const target = model.nodes.find((node) => node.id === edge.targetNodeId)
+  if (source?.reviewStatus === 'locked' || target?.reviewStatus === 'locked') {
+    return { ok: false, error: 'node is locked' }
+  }
+  return {
+    ok: true,
+    model: {
+      ...model,
+      edges: model.edges.filter((item) => item.id !== op.edgeId),
+    },
   }
 }
 
@@ -156,7 +299,7 @@ function applyDeleteNodeOp(
  * User checkpoint — propose a candidate ModelPatch from confirmed nodes vs anchor statuses.
  *
  * Product: graph and note are loosely coupled (意合而不形合). Do not add nodes
- * for uncovered note text. Never auto-apply; caller puts the result on pendingPatch.
+ * for uncovered note text. Never auto-apply; caller puts the result on the note-change lane.
  *
  * Rules:
  * - empty sourceAnchorIds → skip (unbound is allowed)

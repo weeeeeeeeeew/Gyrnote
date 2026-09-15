@@ -2,9 +2,9 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .note import PersistedThoughtModel
+from .note import PersistedThoughtModel, ThoughtEdgeType
 
-InstructionOpName = Literal["update_node_text", "delete_node", "move_anchor"]
+InstructionOpName = Literal["update_node_text", "delete_node", "move_anchor", "add_edge", "delete_edge"]
 
 
 class InstructionSourceAnchor(BaseModel):
@@ -80,8 +80,54 @@ class MoveAnchorOp(BaseModel):
         return self
 
 
+class AddEdgeOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["add_edge"]
+    source_node_id: str = Field(min_length=1, max_length=128)
+    target_node_id: str = Field(min_length=1, max_length=128)
+    type: ThoughtEdgeType
+    label: str | None = Field(default=None, max_length=80)
+    id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("source_node_id", "target_node_id")
+    @classmethod
+    def reject_blank_strings(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must not be blank")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_endpoints_and_custom_label(self) -> Self:
+        if self.source_node_id == self.target_node_id:
+            raise ValueError("add_edge cannot be a self-loop")
+        if self.type == "custom":
+            if self.label is None or not self.label.strip():
+                raise ValueError("custom edges require a non-blank label")
+            self.label = self.label.strip()
+        else:
+            self.label = None
+        if self.id is not None:
+            self.id = self.id.strip() or None
+        return self
+
+
+class DeleteEdgeOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["delete_edge"]
+    edge_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("edge_id")
+    @classmethod
+    def reject_blank_strings(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must not be blank")
+        return value.strip()
+
+
 InstructionOp = Annotated[
-    UpdateNodeTextOp | DeleteNodeOp | MoveAnchorOp,
+    UpdateNodeTextOp | DeleteNodeOp | MoveAnchorOp | AddEdgeOp | DeleteEdgeOp,
     Field(discriminator="op"),
 ]
 

@@ -6,15 +6,19 @@ from pydantic import ValidationError
 
 from src.app.api.v1.instruction_patches import compile_instruction_patch_endpoint
 from src.app.schemas.instruction_patch import (
+    AddEdgeOp,
+    DeleteEdgeOp,
     DeleteNodeOp,
     InstructionPatchRequest,
     MoveAnchorOp,
     UpdateNodeTextOp,
 )
-from src.app.schemas.note import PersistedThoughtModel, PersistedThoughtNode
+from src.app.schemas.note import PersistedThoughtEdge, PersistedThoughtModel, PersistedThoughtNode
 from src.app.services.instruction_patch import (
+    INSTRUCTION_SYSTEM_PROMPT,
     InstructionPatchInvalidError,
     InstructionPatchNotConfiguredError,
+    build_instruction_messages,
     build_instruction_patch,
     coerce_instruction_op,
     compile_instruction_patch,
@@ -41,6 +45,14 @@ def sample_request(**updates: object) -> InstructionPatchRequest:
                     review_status="confirmed",
                 ),
                 PersistedThoughtNode(
+                    id="n2",
+                    type="evidence",
+                    text="一条证据",
+                    origin="user_created",
+                    explicitness="explicit",
+                    review_status="confirmed",
+                ),
+                PersistedThoughtNode(
                     id="n-lock",
                     type="claim",
                     text="已锁定",
@@ -49,7 +61,17 @@ def sample_request(**updates: object) -> InstructionPatchRequest:
                     review_status="locked",
                 ),
             ],
-            edges=[],
+            edges=[
+                PersistedThoughtEdge(
+                    id="e1",
+                    source_node_id="n2",
+                    target_node_id="n1",
+                    type="supports",
+                    origin="user_created",
+                    explicitness="explicit",
+                    review_status="confirmed",
+                )
+            ],
         ),
         "source_anchors": [
             {"id": "a1", "block_id": "b1", "start_offset": 0, "end_offset": 2},
@@ -113,6 +135,32 @@ def test_build_instruction_patch_avoids_model_id_collision() -> None:
     )
     assert patch.id != request.thought_model.id
     assert patch.id.endswith("-candidate")
+
+
+def test_build_instruction_patch_can_add_and_delete_edges() -> None:
+    request = sample_request()
+    added = build_instruction_patch(
+        request,
+        [AddEdgeOp(op="add_edge", source_node_id="n1", target_node_id="n2", type="explains")],
+    )
+    assert added.ops[0].op == "add_edge"
+    assert added.ops[0].id
+    removed = build_instruction_patch(request, [DeleteEdgeOp(op="delete_edge", edge_id="e1")])
+    assert removed.ops[0].op == "delete_edge"
+
+
+def test_build_instruction_patch_rejects_structure_ops_on_locked_or_duplicate() -> None:
+    request = sample_request()
+    with pytest.raises(ValueError, match="locked"):
+        build_instruction_patch(
+            request,
+            [AddEdgeOp(op="add_edge", source_node_id="n1", target_node_id="n-lock", type="supports")],
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        build_instruction_patch(
+            request,
+            [AddEdgeOp(op="add_edge", source_node_id="n2", target_node_id="n1", type="supports")],
+        )
 
 
 def test_coerce_instruction_op_rejects_add_node() -> None:
@@ -302,3 +350,16 @@ def test_parse_instruction_tool_calls_rejects_add_node_and_bad_envelope() -> Non
                 ]
             }
         )
+
+
+def test_instruction_prompt_allows_structure_ops_but_not_add_node() -> None:
+    prompt = INSTRUCTION_SYSTEM_PROMPT.lower()
+    assert "never call add_node" in prompt
+    assert "add_edge" in prompt
+    assert "delete_edge" in prompt
+    assert "do not rewrite node text as a substitute" in prompt
+    messages = build_instruction_messages(sample_request())
+    assert messages[0]["content"] == INSTRUCTION_SYSTEM_PROMPT
+    assert "edges:" in messages[1]["content"]
+    assert "e1" in messages[1]["content"]
+    assert "instruction:" in messages[1]["content"]

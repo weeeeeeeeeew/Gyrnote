@@ -150,18 +150,24 @@ class PersistedThoughtModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=128)
-    note_id: str = Field(min_length=1, max_length=128)
+    # Empty on first create: the note UUID does not exist until INSERT. Service fills it after flush.
+    note_id: str = Field(default="", max_length=128)
     version: int = Field(ge=1)
     title: str = Field(min_length=1, max_length=200)
     nodes: list[PersistedThoughtNode] = Field(default_factory=list, max_length=500)
     edges: list[PersistedThoughtEdge] = Field(default_factory=list, max_length=1000)
 
-    @field_validator("id", "note_id", "title")
+    @field_validator("id", "title")
     @classmethod
     def reject_blank_strings(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("value must not be blank")
         return value
+
+    @field_validator("note_id")
+    @classmethod
+    def normalize_draft_note_id(cls, value: str) -> str:
+        return value.strip()
 
     @model_validator(mode="after")
     def validate_edge_endpoints(self) -> Self:
@@ -173,7 +179,8 @@ class PersistedThoughtModel(BaseModel):
 
 
 class GraphNodePosition(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # Vue Flow positions may include view-only extras such as z. Layout is not domain state.
+    model_config = ConfigDict(extra="ignore")
 
     x: float
     y: float
@@ -256,6 +263,13 @@ class NoteVersionRead(BaseModel):
     created_at: datetime
 
 
+class NoteListItem(BaseModel):
+    id: uuid_pkg.UUID
+    title: str
+    revision: int
+    updated_at: datetime
+
+
 class NoteRead(BaseModel):
     id: uuid_pkg.UUID
     owner_id: int
@@ -266,5 +280,6 @@ class NoteRead(BaseModel):
     source_anchors: list[SourceAnchorRead]
     thought_model: PersistedThoughtModel
     graph_layout: PersistedGraphLayout
+    chunk_index_error: str | None = None
     created_at: datetime
     updated_at: datetime

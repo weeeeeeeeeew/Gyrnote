@@ -1,5 +1,7 @@
 import { ApiError, customFetch } from '@/api/http-client'
 
+import { llmRequestHeaders } from './llm-settings'
+
 import type { CandidateThoughtModel } from '../domain/thought-model'
 import { parseCandidateThoughtModel, type CandidateCompilePayload } from './candidates-api'
 
@@ -23,7 +25,7 @@ export async function enqueueCandidateCompile(
 ): Promise<CandidateJobSnapshot> {
   const response = await customFetch<ApiResponse<unknown>>('/api/v1/candidate-jobs', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...llmRequestHeaders() },
     body: JSON.stringify(payload),
   })
   return parseCandidateJobSnapshot(response.data)
@@ -37,27 +39,57 @@ export async function getCandidateJob(jobId: string): Promise<CandidateJobSnapsh
   return parseCandidateJobSnapshot(response.data)
 }
 
+/** Live compile uses LLM_TIMEOUT_SECONDS=60; leave slack for queue pickup and parse. */
+export const CANDIDATE_COMPILE_POLL_DELAY_MS = 1000
+export const CANDIDATE_COMPILE_TIMEOUT_MS = 120_000
+
+const TIMEOUT_MESSAGE =
+  '候选编译超时：模型大约需要一分钟。请确认 worker 仍在运行后再试，不要立刻连点。'
+
 export async function compileCandidateModelViaJob(
   payload: CandidateCompilePayload,
-  options?: { pollDelayMs?: number; maxAttempts?: number },
+  options?: { pollDelayMs?: number; maxAttempts?: number; timeoutMs?: number },
 ): Promise<CandidateThoughtModel> {
-  const pollDelayMs = options?.pollDelayMs ?? 400
-  const maxAttempts = options?.maxAttempts ?? 45
+  const pollDelayMs = options?.pollDelayMs ?? CANDIDATE_COMPILE_POLL_DELAY_MS
+  const timeoutMs = options?.timeoutMs ?? CANDIDATE_COMPILE_TIMEOUT_MS
+  const maxAttempts = options?.maxAttempts
+  const startedAt = Date.now()
   let snapshot = await enqueueCandidateCompile(payload)
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    if (snapshot.status === 'succeeded') {
-      if (!snapshot.candidate) {
-        throw new ApiError(502, snapshot, 'Candidate job succeeded without a candidate')
-      }
-      return snapshot.candidate
+  let polls = 0
+
+  for (;;) {
+    const terminal = readTerminalCandidate(snapshot)
+    if (terminal) {
+      return terminal
     }
-    if (snapshot.status === 'failed') {
-      throw new ApiError(502, snapshot, snapshot.error ?? 'Candidate compile job failed')
+    const timedOut =
+      Date.now() - startedAt >= timeoutMs ||
+      (maxAttempts !== undefined && polls >= maxAttempts)
+    if (timedOut) {
+      snapshot = await getCandidateJob(snapshot.jobId)
+      const recovered = readTerminalCandidate(snapshot)
+      if (recovered) {
+        return recovered
+      }
+      throw new ApiError(504, snapshot, TIMEOUT_MESSAGE)
     }
     await wait(pollDelayMs)
     snapshot = await getCandidateJob(snapshot.jobId)
+    polls += 1
   }
-  throw new ApiError(504, snapshot, 'Candidate compile job timed out')
+}
+
+function readTerminalCandidate(snapshot: CandidateJobSnapshot): CandidateThoughtModel | null {
+  if (snapshot.status === 'succeeded') {
+    if (!snapshot.candidate) {
+      throw new ApiError(502, snapshot, 'Candidate job succeeded without a candidate')
+    }
+    return snapshot.candidate
+  }
+  if (snapshot.status === 'failed') {
+    throw new ApiError(502, snapshot, snapshot.error ?? 'Candidate compile job failed')
+  }
+  return null
 }
 
 function parseCandidateJobSnapshot(value: unknown): CandidateJobSnapshot {

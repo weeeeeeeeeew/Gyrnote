@@ -15,10 +15,9 @@ import type {
   ThoughtModel,
   ThoughtNodeType,
 } from '../domain/thought-model'
-import { resolveCustomLabel, toConfirmedThoughtEdge, toConfirmedThoughtNode } from '../domain/thought-model'
+import { resolveCustomLabel, toConfirmedThoughtEdge, toConfirmedThoughtNode, createBlankThoughtModel } from '../domain/thought-model'
 import {
-  applyModelPatch,
-  applyMoveAnchorOps,
+  applyConfirmedPatchOps,
   proposePatchFromAnchorResolutions,
   type ModelPatch,
   type ModelPatchAnchorResolution,
@@ -57,11 +56,19 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
   const candidateModel = ref<CandidateThoughtModel | null>(null)
   const candidateError = ref<string | null>(null)
   const acceptFeedback = ref<string | null>(null)
-  /** Candidate ModelPatch awaiting user approve; never auto-applied. */
-  const pendingPatch = ref<ModelPatch | null>(null)
-  const patchFeedback = ref<string | null>(null)
-  const patchReviewThreadId = ref<string | null>(null)
-  const patchReviewStatus = ref<PatchReviewStatus | 'idle'>('idle')
+  /**
+   * Natural-language instruction patch (LLM). Gated by patch-review interrupt.
+   * Isolated from note-change patches.
+   */
+  const pendingInstructionPatch = ref<ModelPatch | null>(null)
+  const instructionPatchFeedback = ref<string | null>(null)
+  const instructionReviewThreadId = ref<string | null>(null)
+  const instructionReviewStatus = ref<PatchReviewStatus | 'idle'>('idle')
+  /**
+   * Deterministic patch from note/anchor drift. Per-op accept; no interrupt review.
+   */
+  const pendingNoteChangePatch = ref<ModelPatch | null>(null)
+  const noteChangePatchFeedback = ref<string | null>(null)
   /** View-layout only; not part of ThoughtModel domain persistence yet. */
   const nodePositions = ref<Record<string, GraphNodePosition>>({})
   const graphEdgePathStyle = ref<GraphEdgePathStyle>('default')
@@ -76,15 +83,21 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
   const selectedEdge = computed(
     () => model.value.edges.find((edge) => edge.id === selectedEdgeId.value) ?? null,
   )
-  const selectedSourceAnchor = computed(() => {
-    const sourceAnchorIds = selectedNode.value?.sourceAnchorIds ?? []
-    const sourceAnchorId = sourceAnchorIds[0]
-
-    if (!sourceAnchorId) {
-      return null
-    }
-
-    return sourceAnchors.value.find((anchor) => anchor.id === sourceAnchorId) ?? null
+  const selectedSourceAnchors = computed(() => {
+    const ids = selectedNode.value?.sourceAnchorIds ?? []
+    return ids
+      .map((anchorId) => sourceAnchors.value.find((anchor) => anchor.id === anchorId) ?? null)
+      .filter((anchor): anchor is IdentifiedSourceAnchor => anchor !== null)
+  })
+  const selectedSourceAnchor = computed(() => selectedSourceAnchors.value[0] ?? null)
+  const focusedSourceAnchorId = ref<string | null>(null)
+  const focusedSourceAnchor = computed(() => {
+    const focusedId = focusedSourceAnchorId.value
+    return (
+      selectedSourceAnchors.value.find((anchor) => anchor.id === focusedId) ??
+      selectedSourceAnchors.value[0] ??
+      null
+    )
   })
 
   function selectView(view: WorkbenchView) {
@@ -94,11 +107,27 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
   function selectNode(nodeId: string) {
     selectedNodeId.value = nodeId
     selectedEdgeId.value = null
+    focusedSourceAnchorId.value = selectedSourceAnchors.value[0]?.id ?? null
   }
 
   function selectEdge(edgeId: string) {
     selectedEdgeId.value = edgeId
     selectedNodeId.value = null
+    focusedSourceAnchorId.value = null
+  }
+
+  function clearSelection() {
+    selectedNodeId.value = null
+    selectedEdgeId.value = null
+    focusedSourceAnchorId.value = null
+  }
+
+  function focusSourceAnchor(anchorId: string): boolean {
+    if (!selectedSourceAnchors.value.some((anchor) => anchor.id === anchorId)) {
+      return false
+    }
+    focusedSourceAnchorId.value = anchorId
+    return true
   }
 
   /**
@@ -150,21 +179,13 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
       return null
     }
 
-    const previousAnchorIds = [...node.sourceAnchorIds]
     const identifiedAnchor: IdentifiedSourceAnchor = { id: anchorId, ...anchor }
 
     sourceAnchors.value.push(identifiedAnchor)
-    // Manual attach UX still replaces the binding set with the newly drawn span.
-    node.sourceAnchorIds = [anchorId]
-
-    for (const previousAnchorId of previousAnchorIds) {
-      if (
-        previousAnchorId !== anchorId &&
-        !model.value.nodes.some((candidate) => candidate.sourceAnchorIds.includes(previousAnchorId))
-      ) {
-        sourceAnchors.value = sourceAnchors.value.filter((item) => item.id !== previousAnchorId)
-      }
+    if (!node.sourceAnchorIds.includes(anchorId)) {
+      node.sourceAnchorIds = [...node.sourceAnchorIds, anchorId]
     }
+    focusedSourceAnchorId.value = anchorId
 
     return identifiedAnchor
   }
@@ -207,6 +228,8 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
       if (!noteId.trim() || !Number.isInteger(sourceRevision) || sourceRevision < 1) {
         throw new Error('候选模型必须绑定有效的 Note revision')
       }
+      resetConfirmedGraphForCompile()
+      candidateStatus.value = 'generating'
       const candidate = await compileCandidateModelViaJob({
         note_id: noteId,
         source_revision: sourceRevision,
@@ -309,7 +332,7 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
   }
 
   function isUuid(value: string): boolean {
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       value,
     )
   }
@@ -423,6 +446,51 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
     }
 
     return okAccept(`已接受关系：${edge.type}`)
+  }
+
+  function acceptAllCandidates(): AcceptResult {
+    if (!candidateModel.value) {
+      return failAccept('尚未生成候选模型')
+    }
+    const nodeIds = candidateModel.value.nodes.map((node) => node.id)
+    let acceptedNodes = 0
+    let skippedLocked = 0
+    for (const nodeId of nodeIds) {
+      const existing = model.value.nodes.find((node) => node.id === nodeId)
+      if (existing?.reviewStatus === 'locked') {
+        skippedLocked += 1
+        continue
+      }
+      if (acceptCandidateNode(nodeId).ok) {
+        acceptedNodes += 1
+      }
+    }
+    const edgeIds = candidateModel.value?.edges.map((edge) => edge.id) ?? []
+    let acceptedEdges = 0
+    for (const edgeId of edgeIds) {
+      if (acceptCandidateEdge(edgeId).ok) {
+        acceptedEdges += 1
+      }
+    }
+    if (acceptedNodes + acceptedEdges === 0) {
+      return failAccept(
+        skippedLocked > 0 ? '没有可接受项：对应确认节点已锁定' : '没有可接受的候选项',
+      )
+    }
+    const lockedNote = skippedLocked > 0 ? `；跳过 ${skippedLocked} 个已锁定` : ''
+    return okAccept(`已接受 ${acceptedNodes} 个节点、${acceptedEdges} 条关系${lockedNote}`)
+  }
+
+  function discardCandidate(): void {
+    candidateModel.value = null
+    candidateStatus.value = 'idle'
+    candidateError.value = null
+    acceptFeedback.value = null
+    proposedAnchorIdRemap.value = {}
+  }
+
+  function renameTitle(title: string): void {
+    model.value.title = title
   }
 
   function failAccept(message: string): AcceptResult {
@@ -564,25 +632,25 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
   function loadFixtureModelPatch(): boolean {
     const patch = buildFixtureModelPatch(model.value)
     if (patch.ops.length === 0) {
-      pendingPatch.value = null
-      patchFeedback.value = '当前确认模型无法生成 fixture patch'
+      pendingNoteChangePatch.value = null
+      noteChangePatchFeedback.value = '当前确认模型无法生成 fixture patch'
       return false
     }
-    pendingPatch.value = patch
-    patchFeedback.value = null
+    pendingNoteChangePatch.value = patch
+    noteChangePatchFeedback.value = null
     return true
   }
 
   /**
    * Candidate patch from current note vs confirmed node anchors.
-   * Does not write the confirmed model; user must approve.
+   * Note-change lane only; does not write the confirmed model or start LLM review.
    */
   function loadPatchFromAnchorStatuses(
     statuses: ModelPatchAnchorStatusMap | ModelPatchAnchorResolutionMap | null,
   ): boolean {
     if (!statuses) {
-      pendingPatch.value = null
-      patchFeedback.value = '笔记编辑器未就绪，无法对照原文锚点'
+      pendingNoteChangePatch.value = null
+      noteChangePatchFeedback.value = '笔记编辑器未就绪，无法对照原文锚点'
       return false
     }
 
@@ -592,29 +660,29 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
       sourceAnchors.value,
     )
     if (!result.ok) {
-      pendingPatch.value = null
-      patchFeedback.value = result.reason
+      pendingNoteChangePatch.value = null
+      noteChangePatchFeedback.value = result.reason
       return false
     }
 
-    pendingPatch.value = result.patch
-    patchFeedback.value = null
+    pendingNoteChangePatch.value = result.patch
+    noteChangePatchFeedback.value = null
     return true
   }
 
   /**
    * Candidate patch from a natural-language instruction.
-   * Never writes the confirmed model; caller starts interrupt review.
+   * Instruction lane only; never writes the confirmed model.
    */
   async function compileInstructionPatchFromInstruction(instruction: string): Promise<boolean> {
     const text = instruction.trim()
     if (!text) {
-      patchFeedback.value = '请输入改图指令'
+      instructionPatchFeedback.value = '请输入改图指令'
       return false
     }
     const noteId = model.value.noteId.trim()
     if (!noteId) {
-      patchFeedback.value = '当前确认模型未绑定笔记'
+      instructionPatchFeedback.value = '当前确认模型未绑定笔记'
       return false
     }
     try {
@@ -629,147 +697,184 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
           end_offset: anchor.endOffset,
         })),
       })
-      pendingPatch.value = patch
-      patchFeedback.value = null
-      clearPatchReviewSession()
+      pendingInstructionPatch.value = patch
+      instructionPatchFeedback.value = `已生成 ${patch.ops.length} 条候选操作。顶栏批准后才写入确认图。`
+      clearInstructionReviewSession()
       return true
     } catch (error) {
-      pendingPatch.value = null
-      clearPatchReviewSession()
-      patchFeedback.value = readErrorMessage(error, '无法根据指令生成候选 patch')
+      pendingInstructionPatch.value = null
+      clearInstructionReviewSession()
+      instructionPatchFeedback.value = readErrorMessage(error, '无法根据指令生成候选 patch')
       return false
     }
   }
 
-  function clearPatchReviewSession(): void {
-    patchReviewThreadId.value = null
-    patchReviewStatus.value = 'idle'
+  function clearInstructionReviewSession(): void {
+    instructionReviewThreadId.value = null
+    instructionReviewStatus.value = 'idle'
   }
 
-  function dismissPendingPatch(): void {
-    pendingPatch.value = null
-    patchFeedback.value = null
-    clearPatchReviewSession()
+  function dismissInstructionPatch(): void {
+    pendingInstructionPatch.value = null
+    instructionPatchFeedback.value = null
+    clearInstructionReviewSession()
   }
 
-  async function startPendingPatchReview(): Promise<boolean> {
-    if (!pendingPatch.value) {
-      patchFeedback.value = '没有待批准的 patch'
+  function dismissNoteChangePatch(): void {
+    pendingNoteChangePatch.value = null
+    noteChangePatchFeedback.value = null
+  }
+
+  function commitConfirmedOps(
+    ops: ModelPatch['ops'],
+  ): { ok: true; count: number } | { ok: false; error: string } {
+    const result = applyConfirmedPatchOps(model.value, sourceAnchors.value, ops)
+    if (!result.ok) {
+      return { ok: false, error: result.error }
+    }
+    model.value = result.model
+    sourceAnchors.value = result.anchors
+    pruneNodePositions()
+    selectedNodeId.value = null
+    selectedEdgeId.value = null
+    return { ok: true, count: result.appliedOpCount }
+  }
+
+  /**
+   * LLM interrupt gate for the instruction lane only.
+   * Status is an implementation detail of approve, not a chat message.
+   */
+  async function startInstructionPatchReview(): Promise<boolean> {
+    if (!pendingInstructionPatch.value) {
+      instructionPatchFeedback.value = '没有待批准的改图 patch'
       return false
     }
     try {
       const snapshot = await startPatchReview({
-        patchId: pendingPatch.value.id,
-        ops: pendingPatch.value.ops as unknown as Array<Record<string, unknown>>,
+        patchId: pendingInstructionPatch.value.id,
+        ops: pendingInstructionPatch.value.ops as unknown as Array<Record<string, unknown>>,
       })
-      patchReviewThreadId.value = snapshot.threadId
-      patchReviewStatus.value = snapshot.status
-      patchFeedback.value = '审阅已暂停，等待批准或拒绝'
+      instructionReviewThreadId.value = snapshot.threadId
+      instructionReviewStatus.value = snapshot.status
       return true
     } catch (error) {
-      clearPatchReviewSession()
-      patchFeedback.value = readErrorMessage(error, '无法启动补丁审阅')
+      clearInstructionReviewSession()
+      instructionPatchFeedback.value = readErrorMessage(error, '无法启动补丁审阅')
       return false
     }
   }
 
   async function approvePendingPatchViaReview(): Promise<boolean> {
-    if (!pendingPatch.value) {
-      patchFeedback.value = '没有待批准的 patch'
+    if (!pendingInstructionPatch.value) {
+      instructionPatchFeedback.value = '没有待批准的改图 patch'
       return false
     }
-    if (patchReviewStatus.value === 'approved') {
-      return applyPendingPatch()
+    if (instructionReviewStatus.value === 'approved') {
+      return applyInstructionPatch()
     }
-    if (!patchReviewThreadId.value) {
-      const started = await startPendingPatchReview()
-      if (!started || !patchReviewThreadId.value) {
+    if (!instructionReviewThreadId.value) {
+      const started = await startInstructionPatchReview()
+      if (!started || !instructionReviewThreadId.value) {
         return false
       }
     }
     try {
       const snapshot = await resumePatchReview({
-        threadId: patchReviewThreadId.value,
+        threadId: instructionReviewThreadId.value,
         decision: 'approve',
       })
-      patchReviewStatus.value = snapshot.status
+      instructionReviewStatus.value = snapshot.status
       if (snapshot.status !== 'approved') {
-        patchFeedback.value = '审阅未批准，未写入确认模型'
+        instructionPatchFeedback.value = '审阅未批准，未写入确认模型'
         return false
       }
-      return applyPendingPatch()
+      return applyInstructionPatch()
     } catch (error) {
-      patchFeedback.value = readErrorMessage(error, '无法恢复补丁审阅')
+      instructionPatchFeedback.value = readErrorMessage(error, '无法恢复补丁审阅')
       return false
     }
   }
 
   async function rejectPendingPatchViaReview(): Promise<boolean> {
-    if (!pendingPatch.value || !patchReviewThreadId.value) {
-      dismissPendingPatch()
+    if (!pendingInstructionPatch.value || !instructionReviewThreadId.value) {
+      dismissInstructionPatch()
       return true
     }
     try {
       const snapshot = await resumePatchReview({
-        threadId: patchReviewThreadId.value,
+        threadId: instructionReviewThreadId.value,
         decision: 'reject',
       })
-      patchReviewStatus.value = snapshot.status
+      instructionReviewStatus.value = snapshot.status
       if (snapshot.status !== 'rejected') {
-        patchFeedback.value = '审阅未拒绝'
+        instructionPatchFeedback.value = '审阅未拒绝'
         return false
       }
-      dismissPendingPatch()
+      dismissInstructionPatch()
       return true
     } catch (error) {
-      patchFeedback.value = readErrorMessage(error, '无法拒绝补丁审阅')
+      instructionPatchFeedback.value = readErrorMessage(error, '无法拒绝补丁审阅')
       return false
     }
   }
 
-  /**
-   * Approve pending ModelPatch into the confirmed model.
-   * Returns false when missing / invalid; never partially applies.
-   */
-  function applyPendingPatch(): boolean {
-    if (!pendingPatch.value) {
-      patchFeedback.value = '没有待批准的 patch'
+  function applyInstructionPatch(): boolean {
+    if (!pendingInstructionPatch.value) {
+      instructionPatchFeedback.value = '没有待批准的改图 patch'
       return false
     }
-
-    const patch = pendingPatch.value
-    const moveOps = patch.ops.filter(
-      (op): op is Extract<ModelPatch['ops'][number], { op: 'move_anchor' }> =>
-        op.op === 'move_anchor',
-    )
-    const modelOps = patch.ops.filter((op) => op.op !== 'move_anchor')
-
-    let nextAnchors = sourceAnchors.value.map((anchor) => ({ ...anchor }))
-    if (moveOps.length > 0) {
-      const moved = applyMoveAnchorOps(nextAnchors, moveOps)
-      if (!moved.ok) {
-        patchFeedback.value = moved.error
-        return false
-      }
-      nextAnchors = moved.anchors
+    const patch = pendingInstructionPatch.value
+    const committed = commitConfirmedOps(patch.ops)
+    if (!committed.ok) {
+      instructionPatchFeedback.value = committed.error
+      return false
     }
+    pendingInstructionPatch.value = null
+    instructionPatchFeedback.value = `已应用 ${committed.count} 条操作`
+    clearInstructionReviewSession()
+    return true
+  }
 
-    if (modelOps.length > 0) {
-      const result = applyModelPatch(model.value, { ...patch, ops: modelOps })
-      if (!result.ok) {
-        patchFeedback.value = result.errors.join('；')
-        return false
-      }
-      model.value = result.model
-      pruneNodePositions()
+  function acceptNoteChangeOp(index: number): boolean {
+    const patch = pendingNoteChangePatch.value
+    if (!patch || index < 0 || index >= patch.ops.length) {
+      noteChangePatchFeedback.value = '没有可接受的操作'
+      return false
     }
+    const op = patch.ops[index]
+    if (!op) {
+      noteChangePatchFeedback.value = '没有可接受的操作'
+      return false
+    }
+    const committed = commitConfirmedOps([op])
+    if (!committed.ok) {
+      noteChangePatchFeedback.value = committed.error
+      return false
+    }
+    const remaining = patch.ops.filter((_, itemIndex) => itemIndex !== index)
+    if (remaining.length === 0) {
+      pendingNoteChangePatch.value = null
+      noteChangePatchFeedback.value = '已接受 1 条操作'
+    } else {
+      pendingNoteChangePatch.value = { ...patch, ops: remaining }
+      noteChangePatchFeedback.value = `已接受 1 条，剩余 ${remaining.length} 条`
+    }
+    return true
+  }
 
-    sourceAnchors.value = nextAnchors
-    selectedNodeId.value = null
-    selectedEdgeId.value = null
-    pendingPatch.value = null
-    patchFeedback.value = `已应用 ${patch.ops.length} 条操作`
-    clearPatchReviewSession()
+  function acceptRemainingNoteChangeOps(): boolean {
+    if (!pendingNoteChangePatch.value) {
+      noteChangePatchFeedback.value = '没有待批准的原文变更'
+      return false
+    }
+    const patch = pendingNoteChangePatch.value
+    const committed = commitConfirmedOps(patch.ops)
+    if (!committed.ok) {
+      noteChangePatchFeedback.value = committed.error
+      return false
+    }
+    pendingNoteChangePatch.value = null
+    noteChangePatchFeedback.value = `已应用 ${committed.count} 条操作`
     return true
   }
 
@@ -781,10 +886,35 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
     candidateStatus.value = 'idle'
     candidateError.value = null
     acceptFeedback.value = null
-    pendingPatch.value = null
-    patchFeedback.value = null
+    pendingInstructionPatch.value = null
+    instructionPatchFeedback.value = null
+    pendingNoteChangePatch.value = null
+    noteChangePatchFeedback.value = null
     proposedAnchorIdRemap.value = {}
-    clearPatchReviewSession()
+    clearInstructionReviewSession()
+    resetGraphLayout()
+    graphEdgePathStyle.value = 'default'
+  }
+
+  /** Full compile starts from an empty confirmed graph; does not overwrite candidate status. */
+  function resetConfirmedGraphForCompile(): void {
+    const current = model.value
+    model.value = {
+      ...createBlankThoughtModel(current.title),
+      id: current.id,
+      noteId: current.noteId,
+      version: current.version,
+    }
+    selectedNodeId.value = null
+    selectedEdgeId.value = null
+    candidateModel.value = null
+    acceptFeedback.value = null
+    pendingInstructionPatch.value = null
+    instructionPatchFeedback.value = null
+    pendingNoteChangePatch.value = null
+    noteChangePatchFeedback.value = null
+    proposedAnchorIdRemap.value = {}
+    clearInstructionReviewSession()
     resetGraphLayout()
     graphEdgePathStyle.value = 'default'
   }
@@ -830,28 +960,39 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
     candidateModel,
     candidateError,
     acceptFeedback,
-    pendingPatch,
-    patchFeedback,
-    patchReviewThreadId,
-    patchReviewStatus,
+    pendingInstructionPatch,
+    instructionPatchFeedback,
+    instructionReviewThreadId,
+    instructionReviewStatus,
+    pendingNoteChangePatch,
+    noteChangePatchFeedback,
     selectedSourceAnchor,
+    selectedSourceAnchors,
+    focusedSourceAnchorId,
+    focusedSourceAnchor,
     nodePositions,
     graphEdgePathStyle,
     graphConnectEdgeType,
     selectView,
     selectNode,
     selectEdge,
+    clearSelection,
+    focusSourceAnchor,
     updateSelectedNodeText,
     updateSelectedEdgeType,
     attachSourceAnchorToSelectedNode,
     replaceSourceAnchors,
     replaceConfirmedModel,
+    resetConfirmedGraphForCompile,
     replaceGraphLayout,
     syncModelNoteIdentity,
     generateFixtureCandidate,
     generateCandidateFromApi,
     acceptCandidateNode,
     acceptCandidateEdge,
+    acceptAllCandidates,
+    discardCandidate,
+    renameTitle,
     lockSelectedNode,
     unlockSelectedNode,
     deleteSelectedNode,
@@ -865,11 +1006,13 @@ export const useThoughtModelWorkbenchStore = defineStore('thought-model-workbenc
     loadFixtureModelPatch,
     loadPatchFromAnchorStatuses,
     compileInstructionPatchFromInstruction,
-    startPendingPatchReview,
+    startInstructionPatchReview,
     approvePendingPatchViaReview,
     rejectPendingPatchViaReview,
-    applyPendingPatch,
-    dismissPendingPatch,
+    acceptNoteChangeOp,
+    acceptRemainingNoteChangeOps,
+    dismissInstructionPatch,
+    dismissNoteChangePatch,
   }
 })
 
@@ -877,6 +1020,9 @@ function readErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) {
     if (isRecord(error.data) && typeof error.data.detail === 'string') {
       return error.data.detail
+    }
+    if (error.message && error.message !== `API Error: ${error.status}`) {
+      return error.message
     }
     return error.message || fallback
   }

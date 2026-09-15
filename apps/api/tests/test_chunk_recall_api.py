@@ -87,10 +87,34 @@ async def test_chunk_recall_query_text_embeds_before_ranker(
     )
 
     assert result == expected
-    embed.assert_awaited_once_with(["秋招方向"])
+    embed.assert_awaited_once_with(["秋招方向"], None)
     execute.assert_awaited_once()
     assert execute.await_args.kwargs["query_embedding"] == [1.0, 0.0]
     assert execute.await_args.kwargs["owner_id"] == current_user_dict["id"]
+
+
+@pytest.mark.asyncio
+async def test_chunk_recall_forwards_embedding_override_headers(
+    mock_db, current_user_dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    embed = AsyncMock(return_value=[[1.0, 0.0]])
+    execute = AsyncMock(return_value=NoteChunkRecallRead(hits=[]))
+    monkeypatch.setattr("src.app.api.v1.chunk_recalls.embed_note_texts", embed)
+    monkeypatch.setattr("src.app.api.v1.chunk_recalls.execute_chunk_recall", execute)
+
+    await recall_note_chunks_endpoint(
+        NoteChunkRecallRequest(query="秋招方向"),
+        current_user_dict,
+        mock_db,
+        "sk-embed",
+        "https://embed.example/v1",
+        "bge-m3",
+    )
+
+    embed.assert_awaited_once_with(
+        ["秋招方向"],
+        {"api_key": "sk-embed", "base_url": "https://embed.example/v1", "model": "bge-m3"},
+    )
 
 
 @pytest.mark.asyncio

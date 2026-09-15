@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.note import Note, NoteVersion, SourceAnchor
 from ..schemas.note import (
     NoteCreate,
+    NoteListItem,
     NoteRead,
     NoteVersionCreate,
     NoteVersionRead,
@@ -19,7 +20,7 @@ from ..schemas.note import (
     SourceAnchorCreate,
     SourceAnchorRead,
 )
-from .note_chunks import EmbedTexts, create_chunk_models, prepare_note_chunks
+from .note_chunks import EmbedTexts, EmbeddingError, EmbeddingNotConfiguredError, create_chunk_models, prepare_note_chunks
 
 
 class NoteNotFoundError(Exception):
@@ -37,14 +38,36 @@ def calculate_content_hash(content_json: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+async def _chunk_drafts_for_save(
+    content_json: dict[str, Any],
+    *,
+    embed_texts: EmbedTexts | None,
+    fail_closed_embeddings: bool,
+) -> tuple[list, str | None]:
+    try:
+        drafts = await prepare_note_chunks(
+            content_json,
+            embed_texts=embed_texts,
+            fail_closed=fail_closed_embeddings,
+        )
+        return drafts, None
+    except (EmbeddingNotConfiguredError, EmbeddingError, ValueError) as exc:
+        return [], str(exc)
+
+
 async def create_note(
     db: AsyncSession,
     owner_id: int,
     payload: NoteCreate,
     *,
     embed_texts: EmbedTexts | None = None,
+    fail_closed_embeddings: bool = False,
 ) -> NoteRead:
-    chunk_drafts = await prepare_note_chunks(payload.content_json, embed_texts=embed_texts)
+    chunk_drafts, chunk_index_error = await _chunk_drafts_for_save(
+        payload.content_json,
+        embed_texts=embed_texts,
+        fail_closed_embeddings=fail_closed_embeddings,
+    )
     try:
         note = Note(owner_id=owner_id, title=payload.title.strip(), content_json=payload.content_json)
         db.add(note)
@@ -62,10 +85,21 @@ async def create_note(
         note.current_version_id = version.id
 
         await db.commit()
-        return build_note_read(note, version, anchors)
+        return build_note_read(note, version, anchors, chunk_index_error=chunk_index_error)
     except Exception:
         await db.rollback()
         raise
+
+
+async def list_notes(db: AsyncSession, owner_id: int) -> list[NoteListItem]:
+    result = await db.execute(
+        select(Note).where(Note.owner_id == owner_id).order_by(Note.updated_at.desc(), Note.id.desc())
+    )
+    notes = result.scalars().all()
+    return [
+        NoteListItem(id=note.id, title=note.title, revision=note.revision, updated_at=note.updated_at)
+        for note in notes
+    ]
 
 
 async def get_note(db: AsyncSession, owner_id: int, note_id: uuid_pkg.UUID) -> NoteRead:
@@ -97,8 +131,13 @@ async def save_note_version(
     payload: NoteVersionCreate,
     *,
     embed_texts: EmbedTexts | None = None,
+    fail_closed_embeddings: bool = False,
 ) -> NoteRead:
-    chunk_drafts = await prepare_note_chunks(payload.content_json, embed_texts=embed_texts)
+    chunk_drafts, chunk_index_error = await _chunk_drafts_for_save(
+        payload.content_json,
+        embed_texts=embed_texts,
+        fail_closed_embeddings=fail_closed_embeddings,
+    )
     try:
         note_result = await db.execute(
             select(Note).where(Note.id == note_id, Note.owner_id == owner_id).with_for_update()
@@ -132,7 +171,7 @@ async def save_note_version(
         note.updated_at = datetime.now(UTC)
 
         await db.commit()
-        return build_note_read(note, version, anchors)
+        return build_note_read(note, version, anchors, chunk_index_error=chunk_index_error)
     except Exception:
         await db.rollback()
         raise
@@ -190,7 +229,13 @@ def create_anchor_models(
     ]
 
 
-def build_note_read(note: Note, version: NoteVersion, anchors: Sequence[SourceAnchor]) -> NoteRead:
+def build_note_read(
+    note: Note,
+    version: NoteVersion,
+    anchors: Sequence[SourceAnchor],
+    *,
+    chunk_index_error: str | None = None,
+) -> NoteRead:
     return NoteRead(
         id=note.id,
         owner_id=note.owner_id,
@@ -213,6 +258,7 @@ def build_note_read(note: Note, version: NoteVersion, anchors: Sequence[SourceAn
         ],
         thought_model=coerce_persisted_thought_model(version.thought_model_json, note),
         graph_layout=coerce_persisted_graph_layout(getattr(version, "graph_layout_json", None)),
+        chunk_index_error=chunk_index_error,
         created_at=note.created_at,
         updated_at=note.updated_at,
     )

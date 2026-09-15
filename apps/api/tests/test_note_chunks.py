@@ -46,6 +46,14 @@ def test_parse_openai_embeddings_orders_by_index() -> None:
     assert vectors == [[1.0, 0.0], [0.0, 1.0]]
 
 
+def test_parse_openai_embeddings_accepts_missing_index() -> None:
+    vectors = parse_openai_embeddings(
+        {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]},
+        expected_count=2,
+    )
+    assert vectors == [[1.0, 0.0], [0.0, 1.0]]
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_count"),
     [
@@ -55,7 +63,6 @@ def test_parse_openai_embeddings_orders_by_index() -> None:
         ({"data": [{"index": 2, "embedding": [1.0]}, {"index": 0, "embedding": [0.0, 1.0]}]}, 2),
         ({"data": [{"index": True, "embedding": [1.0]}]}, 1),
         ({"data": [{"index": 0, "embedding": []}]}, 1),
-        ({"data": [{"index": 0, "embedding": [0.0, 0.0]}]}, 1),
         ({"data": [{"index": 0, "embedding": [True, 1.0]}]}, 1),
         ({"data": [{"index": 0, "embedding": [float("nan")]}]}, 1),
         (
@@ -146,6 +153,15 @@ async def test_prepare_note_chunks_swallows_embedding_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_note_chunks_fail_closed_raises() -> None:
+    async def fail_embed(_texts: list[str]) -> list[list[float]]:
+        raise EmbeddingProviderError("provider down")
+
+    with pytest.raises(EmbeddingProviderError):
+        await prepare_note_chunks(DOC_WITH_BLOCK, embed_texts=fail_embed, fail_closed=True)
+
+
+@pytest.mark.asyncio
 async def test_embed_note_texts_requires_separate_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "EMBEDDING_ENABLED", False)
     with pytest.raises(EmbeddingNotConfiguredError):
@@ -199,6 +215,212 @@ async def test_embed_note_texts_posts_openai_compatible_body(monkeypatch: pytest
         vectors = await embed_note_texts(["有内容"])
 
     assert captured["url"] == "https://example.test/v1/embeddings"
-    assert captured["json"] == {"model": "text-embedding-3-small", "input": ["有内容"]}
+    assert captured["json"] == {
+        "model": "text-embedding-3-small",
+        "input": ["有内容"],
+        "encoding_format": "float",
+    }
     assert captured["timeout"] == settings.EMBEDDING_TIMEOUT_SECONDS
     assert vectors == [[0.1, 0.2]]
+
+
+@pytest.mark.asyncio
+async def test_embed_note_texts_uses_client_override_when_env_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "EMBEDDING_ENABLED", False)
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "")
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", None)
+    monkeypatch.setattr(settings, "EMBEDDING_MODEL", "text-embedding-3-small")
+
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"data": [{"index": 0, "embedding": [0.3, 0.4]}]}
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            json: dict[str, object] | None = None,
+        ) -> FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    with patch("src.app.services.note_chunks.httpx.AsyncClient", FakeClient):
+        vectors = await embed_note_texts(
+            ["有内容"],
+            {"api_key": "sk-embed", "base_url": "https://embed.example/v1", "model": "bge-m3"},
+        )
+
+    assert captured["url"] == "https://embed.example/v1/embeddings"
+    assert captured["json"] == {"model": "bge-m3", "input": ["有内容"], "encoding_format": "float"}
+    assert vectors == [[0.3, 0.4]]
+
+
+@pytest.mark.asyncio
+async def test_embed_note_texts_defaults_qwen_to_dashscope_compatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "EMBEDDING_ENABLED", False)
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "")
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", None)
+    monkeypatch.setattr(settings, "EMBEDDING_MODEL", "")
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"data": [{"index": 0, "embedding": [0.5, 0.6]}]}
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            json: dict[str, object] | None = None,
+        ) -> FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    with patch("src.app.services.note_chunks.httpx.AsyncClient", FakeClient):
+        vectors = await embed_note_texts(
+            ["衣服的质量杠杠的"],
+            {"api_key": "sk-embed", "model": "qwen3.7-text-embedding-flash"},
+        )
+
+    assert captured["url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    assert captured["json"] == {
+        "model": "qwen3.7-text-embedding-flash",
+        "input": ["衣服的质量杠杠的"],
+        "encoding_format": "float",
+        "dimensions": 1024,
+    }
+    assert vectors == [[0.5, 0.6]]
+
+
+@pytest.mark.asyncio
+async def test_embed_note_texts_posts_dashscope_native_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "EMBEDDING_ENABLED", False)
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"status_code": 200, "output": {"embeddings": [{"text_index": 0, "embedding": [0.7, 0.8]}]}}
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            json: dict[str, object] | None = None,
+        ) -> FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    with patch("src.app.services.note_chunks.httpx.AsyncClient", FakeClient):
+        vectors = await embed_note_texts(
+            ["有内容"],
+            {
+                "api_key": "sk-embed",
+                "base_url": "https://dashscope.aliyuncs.com/api/v1",
+                "model": "qwen3.7-text-embedding-flash",
+            },
+        )
+
+    assert captured["url"] == (
+        "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+    )
+    assert captured["json"] == {
+        "model": "qwen3.7-text-embedding-flash",
+        "input": {"texts": ["有内容"]},
+        "parameters": {"text_type": "document", "output_type": "dense", "dimension": 1024},
+    }
+    assert vectors == [[0.7, 0.8]]
+
+
+@pytest.mark.asyncio
+async def test_embed_note_texts_retries_batch_as_singles_on_count_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "EMBEDDING_ENABLED", True)
+    monkeypatch.setattr(settings, "EMBEDDING_BASE_URL", "https://example.test/v1")
+    monkeypatch.setattr(settings, "EMBEDDING_API_KEY", SecretStr("sk-test"))
+    monkeypatch.setattr(settings, "EMBEDDING_MODEL", "text-embedding-3-small")
+    posted: list[list[str]] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self) -> dict[str, object]:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            json: dict[str, object] | None = None,
+        ) -> FakeResponse:
+            texts = list(json["input"]) if json and isinstance(json.get("input"), list) else []
+            posted.append(texts)
+            if len(texts) > 1:
+                return FakeResponse({"data": [{"index": 0, "embedding": [0.1, 0.2]}]})
+            return FakeResponse({"data": [{"index": 0, "embedding": [0.3, 0.4]}]})
+
+    with patch("src.app.services.note_chunks.httpx.AsyncClient", FakeClient):
+        vectors = await embed_note_texts(["第一段", "第二段"])
+
+    assert posted[0] == ["第一段", "第二段"]
+    assert posted[1:] == [["第一段"], ["第二段"]]
+    assert vectors == [[0.3, 0.4], [0.3, 0.4]]

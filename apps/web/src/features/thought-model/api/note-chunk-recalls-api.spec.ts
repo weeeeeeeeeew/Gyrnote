@@ -48,6 +48,7 @@ describe('note-chunk-recalls-api', () => {
           score: 0.91,
         },
       ],
+      indexedChunkCount: 0,
     })
   })
 

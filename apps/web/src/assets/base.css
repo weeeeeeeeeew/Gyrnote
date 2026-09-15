@@ -1,4 +1,11 @@
 :root {
+  --gyre: #00a0e8;
+  --gyre-foam: #98d8e8;
+  --gyre-mist: #e7f6fb;
+  --gyre-deep: #0a5d86;
+  --gyre-ink: #0c3a52;
+  --gyre-surface: #f4fbfd;
+  --gyre-line: #c5e6f2;
   font-family:
     Inter,
     ui-sans-serif,
@@ -22,6 +29,7 @@
 body {
   min-height: 100vh;
   min-width: 320px;
+  color: var(--gyre-ink);
   line-height: 1.6;
   font-size: 15px;
   -webkit-font-smoothing: antialiased;

@@ -127,6 +127,40 @@ describe('ThoughtNodeInspector', () => {
     expect(wrapper.text()).toContain('原文锚点')
     expect(wrapper.text()).toContain('“原文”')
   })
+
+  it('lists every bound quote and emits locateAnchor', async () => {
+    const wrapper = mount(ThoughtNodeInspector, {
+      props: {
+        node: createNode({ sourceAnchorIds: ['anchor-a', 'anchor-b'] }),
+        sourceAnchors: [
+          {
+            id: 'anchor-a',
+            blockId: 'block-a',
+            startOffset: 0,
+            endOffset: 2,
+            quote: '第一处',
+            quoteHash: hashSourceQuote('第一处'),
+          },
+          {
+            id: 'anchor-b',
+            blockId: 'block-b',
+            startOffset: 0,
+            endOffset: 2,
+            quote: '第二处',
+            quoteHash: hashSourceQuote('第二处'),
+          },
+        ],
+        focusedSourceAnchorId: 'anchor-a',
+      },
+    })
+
+    expect(wrapper.text()).toContain('“第一处”')
+    expect(wrapper.text()).toContain('“第二处”')
+    expect(wrapper.text()).not.toContain('等 2 处')
+
+    await wrapper.get('button[aria-label="定位第 2 处原文"]').trigger('click')
+    expect(wrapper.emitted('locateAnchor')).toEqual([['anchor-b']])
+  })
 })
 
 function createNode(overrides: Partial<ThoughtNode> = {}): ThoughtNode {

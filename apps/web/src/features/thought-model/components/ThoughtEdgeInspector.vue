@@ -104,8 +104,8 @@ function handleDelete() {
 <style scoped>
 .edge-inspector {
   padding: 12px 16px;
-  border-top: 1px solid #deddd4;
-  background: #f8f6ef;
+  border-top: 1px solid var(--gyre-line);
+  background: var(--gyre-surface);
 }
 
 .edge-inspector__layout {
@@ -118,7 +118,7 @@ function handleDelete() {
 .eyebrow,
 .edge-inspector label,
 .edge-inspector dt {
-  color: #777d73;
+  color: var(--gyre-deep);
   font-size: 12px;
 }
 
@@ -140,7 +140,7 @@ function handleDelete() {
 .endpoint {
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid #deddd4;
+  border: 1px solid var(--gyre-line);
   border-radius: 8px;
   line-height: 1.35;
   background: #ffffff;
@@ -148,7 +148,7 @@ function handleDelete() {
 }
 
 .direction {
-  color: #57735b;
+  color: var(--gyre);
   font-weight: 700;
 }
 
@@ -168,7 +168,7 @@ function handleDelete() {
   flex: 1;
   min-width: 140px;
   padding: 8px 10px;
-  border: 1px solid #c9cbc3;
+  border: 1px solid var(--gyre-line);
   border-radius: 8px;
   color: inherit;
   font: inherit;
@@ -176,8 +176,8 @@ function handleDelete() {
 }
 
 .edge-inspector select:focus-visible {
-  border-color: #57735b;
-  outline: 3px solid rgb(87 115 91 / 16%);
+  border-color: var(--gyre);
+  outline: 3px solid rgb(0 160 232 / 16%);
 }
 
 .edge-inspector button {
@@ -187,7 +187,7 @@ function handleDelete() {
   color: #ffffff;
   font: inherit;
   cursor: pointer;
-  background: #48634d;
+  background: var(--gyre);
 }
 
 .edge-inspector__actions {

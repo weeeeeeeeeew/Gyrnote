@@ -24,9 +24,13 @@ async function submit() {
 <template>
   <main class="login-page">
     <section class="login-card" aria-labelledby="login-title">
-      <p class="eyebrow">Gyrnote · 个人知识库</p>
+      <img class="brand-mark" src="/icon.png" width="72" height="72" alt="" />
+      <p class="eyebrow">Gyrnote</p>
       <h1 id="login-title">登录你的工作台</h1>
-      <p class="intro">登录后，笔记和原文锚点会按账号隔离保存。首次本地演示请先按仓库 README 注册账号。</p>
+      <p class="intro">
+        笔记是事实源，图是层层深入的思考投影。登录后按账号隔离保存。首次本地演示请先按仓库 README
+        注册账号。
+      </p>
 
       <form class="login-form" @submit.prevent="submit">
         <label>
@@ -61,20 +65,31 @@ async function submit() {
   min-height: 100vh;
   place-items: center;
   padding: 24px;
-  background: #f3f0e8;
+  background:
+    radial-gradient(circle at 12% 18%, rgb(152 216 232 / 55%), transparent 34%),
+    radial-gradient(circle at 88% 82%, rgb(0 160 232 / 18%), transparent 32%),
+    var(--gyre-surface);
 }
 
 .login-card {
   width: min(100%, 430px);
   padding: 40px;
-  border: 1px solid #d8d6cb;
+  border: 1px solid var(--gyre-line);
   border-radius: 20px;
-  background: #fffdf8;
-  box-shadow: 0 18px 50px rgb(43 48 38 / 10%);
+  background: #ffffff;
+  box-shadow: 0 18px 50px rgb(12 58 82 / 10%);
+}
+
+.brand-mark {
+  display: block;
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
 }
 
 .eyebrow {
-  color: #687064;
+  margin-top: 16px;
+  color: var(--gyre);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -82,8 +97,8 @@ async function submit() {
 }
 
 h1 {
-  margin-top: 12px;
-  color: #20251f;
+  margin-top: 10px;
+  color: var(--gyre-ink);
   font-size: 32px;
   font-weight: 650;
   letter-spacing: -0.04em;
@@ -91,7 +106,7 @@ h1 {
 
 .intro {
   margin-top: 10px;
-  color: #687064;
+  color: var(--gyre-deep);
 }
 
 .login-form {
@@ -103,23 +118,23 @@ h1 {
 label {
   display: grid;
   gap: 7px;
-  color: #384238;
+  color: var(--gyre-ink);
   font-weight: 600;
 }
 
 input {
   width: 100%;
   padding: 11px 12px;
-  border: 1px solid #c9c8bd;
+  border: 1px solid var(--gyre-line);
   border-radius: 10px;
-  color: #20251f;
+  color: var(--gyre-ink);
   font: inherit;
   background: #ffffff;
 }
 
 input:focus {
-  border-color: #6f8c6c;
-  outline: 3px solid rgb(111 140 108 / 18%);
+  border-color: var(--gyre);
+  outline: 3px solid rgb(0 160 232 / 18%);
 }
 
 button {
@@ -129,7 +144,7 @@ button {
   color: #ffffff;
   font: inherit;
   font-weight: 700;
-  background: #38523a;
+  background: var(--gyre);
   cursor: pointer;
 }
 

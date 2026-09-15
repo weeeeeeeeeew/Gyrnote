@@ -1,4 +1,5 @@
 import { ApiError, customFetch } from '@/api/http-client'
+import { embeddingRequestHeaders } from './llm-settings'
 
 export interface NoteChunkHit {
   noteId: string
@@ -10,6 +11,7 @@ export interface NoteChunkHit {
 
 export interface NoteChunkRecallResult {
   hits: NoteChunkHit[]
+  indexedChunkCount: number
 }
 
 export interface NoteChunkRecallPayload {
@@ -34,7 +36,7 @@ export async function recallNoteChunks(payload: NoteChunkRecallPayload): Promise
   }
   const response = await customFetch<ApiResponse<unknown>>('/api/v1/note-chunk-recalls', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...embeddingRequestHeaders() },
     body: JSON.stringify({
       ...(hasQuery ? { query } : { query_embedding: payload.queryEmbedding }),
       k: payload.k,
@@ -51,7 +53,18 @@ function parseNoteChunkRecallResult(value: unknown): NoteChunkRecallResult {
   if ('thought_model' in value || 'nodes' in value) {
     throw new ApiError(502, value, 'Note chunk recall must not return a ThoughtModel')
   }
-  return { hits: value.hits.map((item) => parseHit(item)) }
+  return {
+    hits: value.hits.map((item) => parseHit(item)),
+    indexedChunkCount: readIndexedCount(value),
+  }
+}
+
+function readIndexedCount(value: Record<string, unknown>): number {
+  const count = value.indexed_chunk_count
+  if (typeof count === 'number' && Number.isInteger(count) && count >= 0) {
+    return count
+  }
+  return 0
 }
 
 function parseHit(value: unknown): NoteChunkHit {

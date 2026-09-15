@@ -30,7 +30,7 @@ export interface NoteVersionSaveInput {
 
 export interface PersistedThoughtModelPayload {
   id: string
-  note_id: string
+  note_id?: string
   version: number
   title: string
   nodes: Array<{
@@ -119,9 +119,10 @@ export function toPersistedThoughtModelPayload(
   model: ThoughtModel,
   titleOverride?: string,
 ): PersistedThoughtModelPayload {
+  const noteId = model.noteId.trim()
   return {
     id: model.id,
-    note_id: model.noteId,
+    ...(noteId ? { note_id: noteId } : {}),
     version: model.version,
     title: (titleOverride ?? model.title).trim(),
     nodes: model.nodes.map((node) => ({
@@ -154,7 +155,7 @@ export function fromPersistedThoughtModelPayload(
 ): ThoughtModel {
   return {
     id: payload.id,
-    noteId: payload.note_id,
+    noteId: payload.note_id ?? '',
     version: payload.version,
     title: payload.title,
     nodes: payload.nodes.map(fromPersistedNode),
@@ -257,5 +258,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  // RFC 4122 / 9562: backend note and anchor ids are uuid7, not only versions 1–5.
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  )
 }

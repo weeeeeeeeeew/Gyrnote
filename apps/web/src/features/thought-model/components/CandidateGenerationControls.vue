@@ -16,6 +16,19 @@ const emit = defineEmits<{
   generate: []
 }>()
 
+const compactButtonLabel = computed(() => {
+  if (props.status === 'generating') {
+    return '…'
+  }
+  if (props.status === 'ready') {
+    return '再编译'
+  }
+  if (props.status === 'error') {
+    return '重试'
+  }
+  return '编译'
+})
+
 const canGenerate = computed(() => {
   return (
     Boolean(props.noteId?.trim()) &&
@@ -42,16 +55,16 @@ const buttonLabel = computed(() => {
 const statusMessage = computed(() => {
   if (props.status === 'idle') {
     return props.noteId
-      ? '首次编译：可读全文并提议证据锚点；候选需审阅后才进入确认模型'
+      ? '首次编译会先清空确认图，再读全文提议候选；候选需审阅后才进入确认模型'
       : '请先保存笔记'
   }
   if (props.status === 'generating') {
-    return '正在生成…'
+    return '正在生成候选，约需一分钟。请保持 worker 运行，不要刷新页面。'
   }
   if (props.status === 'ready') {
     return props.compact
       ? `${props.candidateNodeCount} 个候选待审阅`
-      : `已生成 ${props.candidateNodeCount} 个候选节点：请在审阅区接受；图/大纲仍是确认模型`
+      : `已生成 ${props.candidateNodeCount} 个候选节点：确认图已清空，请在审阅区逐条接受`
   }
   return props.errorMessage ?? '候选模型生成失败'
 })
@@ -63,18 +76,19 @@ const statusMessage = computed(() => {
     :class="{ 'candidate-generation--compact': compact }"
     aria-label="候选模型生成"
   >
-    <p v-if="compact" class="candidate-generation__bridge-label">编译桥接</p>
     <button
       class="candidate-generation__button"
       type="button"
+      :title="statusMessage"
       :disabled="!canGenerate"
       @click="emit('generate')"
     >
-      {{ buttonLabel }}
+      {{ compact ? compactButtonLabel : buttonLabel }}
     </button>
     <p
       class="candidate-generation__status"
       :class="{
+        'candidate-generation__status--compact': compact,
         'candidate-generation__status--ready': status === 'ready',
         'candidate-generation__status--error': status === 'error',
       }"
@@ -93,39 +107,34 @@ const statusMessage = computed(() => {
 }
 
 .candidate-generation--compact {
+  position: relative;
   align-content: center;
   justify-items: center;
   min-width: 0;
-  width: 108px;
-  padding: 12px 8px;
+  width: 32px;
+  padding: 0;
   text-align: center;
-}
-
-.candidate-generation__bridge-label {
-  margin: 0;
-  color: #687064;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
 .candidate-generation__button {
   padding: 9px 14px;
-  border: 1px solid #2f4f6f;
+  border: 0;
   border-radius: 9px;
   color: #ffffff;
   font: inherit;
   font-weight: 700;
-  background: #2f4f6f;
+  background: var(--gyre);
   cursor: pointer;
 }
 
 .candidate-generation--compact .candidate-generation__button {
-  width: 100%;
-  padding: 10px 8px;
+  width: 32px;
+  min-height: 108px;
+  padding: 14px 0;
+  border-radius: 8px;
   font-size: 13px;
-  writing-mode: horizontal-tb;
+  letter-spacing: 0.22em;
+  writing-mode: vertical-rl;
 }
 
 .candidate-generation__button:disabled {
@@ -139,9 +148,13 @@ const statusMessage = computed(() => {
   font-size: 13px;
 }
 
-.candidate-generation--compact .candidate-generation__status {
-  font-size: 11px;
-  line-height: 1.35;
+.candidate-generation__status--compact {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .candidate-generation__status--ready {

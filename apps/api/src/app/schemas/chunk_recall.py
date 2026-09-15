@@ -38,3 +38,4 @@ class NoteChunkRecallRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hits: list[NoteChunkHit]
+    indexed_chunk_count: int = Field(default=0, ge=0)

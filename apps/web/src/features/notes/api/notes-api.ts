@@ -1,5 +1,6 @@
 import { ApiError, customFetch } from '@/api/http-client'
 import type { JSONContent } from '@tiptap/core'
+import { embeddingRequestHeaders } from '@/features/thought-model/api/llm-settings'
 
 import type {
   NoteCreatePayload,
@@ -11,6 +12,7 @@ import type {
 export interface NoteSaveResponse {
   id: string
   revision: number
+  chunkIndexError?: string | null
 }
 
 export interface NoteReadResponse extends NoteSaveResponse {
@@ -30,16 +32,30 @@ export interface NoteSourceAnchorResponse {
   quote_hash: string
 }
 
+export interface NoteSummaryResponse {
+  id: string
+  title: string
+  revision: number
+  updated_at: string
+}
+
 interface ApiResponse<T> {
   data: T
   status: number
   headers: Headers
 }
 
+export async function listNotes(): Promise<NoteSummaryResponse[]> {
+  const response = await customFetch<ApiResponse<unknown>>('/api/v1/notes', {
+    method: 'GET',
+  })
+  return parseNoteSummaries(response.data)
+}
+
 export async function createNote(payload: NoteCreatePayload): Promise<NoteSaveResponse> {
   const response = await customFetch<ApiResponse<unknown>>('/api/v1/notes', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...embeddingRequestHeaders() },
     body: JSON.stringify(payload),
   })
 
@@ -52,7 +68,7 @@ export async function saveNoteVersion(
 ): Promise<NoteSaveResponse> {
   const response = await customFetch<ApiResponse<unknown>>(`/api/v1/notes/${noteId}/versions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...embeddingRequestHeaders() },
     body: JSON.stringify(payload),
   })
 
@@ -67,6 +83,32 @@ export async function getNote(noteId: string): Promise<NoteReadResponse> {
   return parseNoteReadResponse(response.data)
 }
 
+function parseNoteSummaries(value: unknown): NoteSummaryResponse[] {
+  if (!Array.isArray(value)) {
+    throw new ApiError(502, value, 'Note list response format is invalid')
+  }
+
+  return value.map((item) => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== 'string' ||
+      typeof item.title !== 'string' ||
+      typeof item.revision !== 'number' ||
+      !Number.isInteger(item.revision) ||
+      typeof item.updated_at !== 'string'
+    ) {
+      throw new ApiError(502, value, 'Note list response format is invalid')
+    }
+
+    return {
+      id: item.id,
+      title: item.title,
+      revision: item.revision,
+      updated_at: item.updated_at,
+    }
+  })
+}
+
 function parseNoteRead(value: unknown): NoteSaveResponse {
   if (!isRecord(value)) {
     throw new ApiError(502, value, 'Note API response format is invalid')
@@ -78,7 +120,12 @@ function parseNoteRead(value: unknown): NoteSaveResponse {
     throw new ApiError(502, value, 'Note API response format is invalid')
   }
 
-  return { id, revision }
+  const chunkIndexError =
+    typeof value.chunk_index_error === 'string' && value.chunk_index_error.trim()
+      ? value.chunk_index_error
+      : null
+
+  return { id, revision, chunkIndexError }
 }
 
 function parseNoteReadResponse(value: unknown): NoteReadResponse {

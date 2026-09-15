@@ -1,8 +1,11 @@
 import { ApiError, customFetch } from '@/api/http-client'
 
+import { llmRequestHeaders } from './llm-settings'
+
 import type { PersistedThoughtModelPayload } from '@/features/notes/domain/note-persistence'
 
 import type { ModelPatch, ModelPatchOp } from '../domain/model-patch'
+import { THOUGHT_EDGE_TYPES, type ThoughtEdgeType } from '../domain/thought-model'
 
 export interface InstructionPatchPayload {
   instruction: string
@@ -29,7 +32,7 @@ export async function compileInstructionPatch(payload: InstructionPatchPayload):
   }
   const response = await customFetch<ApiResponse<unknown>>('/api/v1/instruction-patches', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...llmRequestHeaders() },
     body: JSON.stringify({
       instruction,
       note_id: payload.note_id,
@@ -92,6 +95,26 @@ function parseInstructionOp(value: unknown, response: unknown): ModelPatchOp {
       nodeId: readString(value, 'node_id', response),
     }
   }
+  if (value.op === 'add_edge') {
+    const edgeType = value.type
+    if (typeof edgeType !== 'string' || !isThoughtEdgeType(edgeType)) {
+      throw new ApiError(502, response, 'Instruction patch add_edge type is invalid')
+    }
+    return {
+      op: 'add_edge',
+      edgeId: typeof value.id === 'string' && value.id.trim() ? value.id.trim() : `nl-e-${readString(value, 'source_node_id', response)}`,
+      sourceNodeId: readString(value, 'source_node_id', response),
+      targetNodeId: readString(value, 'target_node_id', response),
+      type: edgeType,
+      label: typeof value.label === 'string' && value.label.trim() ? value.label.trim() : null,
+    }
+  }
+  if (value.op === 'delete_edge') {
+    return {
+      op: 'delete_edge',
+      edgeId: readString(value, 'edge_id', response),
+    }
+  }
   if (value.op === 'move_anchor') {
     const startOffset = value.start_offset
     const endOffset = value.end_offset
@@ -121,6 +144,10 @@ function readString(record: Record<string, unknown>, key: string, response: unkn
     throw new ApiError(502, response, `Instruction patch missing ${key}`)
   }
   return value
+}
+
+function isThoughtEdgeType(value: string): value is ThoughtEdgeType {
+  return (THOUGHT_EDGE_TYPES as readonly string[]).includes(value)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

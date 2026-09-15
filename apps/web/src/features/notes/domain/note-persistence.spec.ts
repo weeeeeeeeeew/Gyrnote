@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { IdentifiedSourceAnchor } from '@/features/source-anchors/domain/source-anchor'
-import type { ThoughtModel } from '@/features/thought-model/domain/thought-model'
+import {
+  createBlankThoughtModel,
+  type ThoughtModel,
+} from '@/features/thought-model/domain/thought-model'
 
 import {
   fromPersistedThoughtModelPayload,
+  toNoteCreatePayload,
   toNoteVersionCreatePayload,
   toPersistedGraphLayout,
   toPersistedThoughtModelPayload,
@@ -47,6 +51,41 @@ function createThoughtModel(overrides: Partial<ThoughtModel> = {}): ThoughtModel
     ...overrides,
   }
 }
+
+describe('toNoteCreatePayload', () => {
+  it('lets a blank draft keep an empty note_id until the server assigns one', () => {
+    const payload = toNoteCreatePayload({
+      title: '未命名笔记',
+      contentJson: {
+        type: 'doc',
+        content: [{ type: 'paragraph', attrs: { blockId: 'block-start' } }],
+      },
+      sourceAnchors: [],
+      thoughtModel: createBlankThoughtModel(),
+      graphLayout: { nodePositions: {}, edgePathStyle: 'default' },
+      expectedRevision: 1,
+    })
+
+    expect(payload.thought_model.note_id).toBeUndefined()
+    expect(payload.thought_model.nodes).toEqual([])
+    expect(payload.source_anchors).toEqual([])
+  })
+
+  it('accepts uuid7 source anchor ids assigned by the backend', () => {
+    const uuid7 = '01a0a00b-bb02-796f-9e13-f70331d6da6b'
+    const payload = toNoteCreatePayload({
+      title: '未命名笔记',
+      contentJson: { type: 'doc' },
+      sourceAnchors: [createAnchor({ id: uuid7 })],
+      thoughtModel: createBlankThoughtModel(),
+      graphLayout: { nodePositions: {}, edgePathStyle: 'default' },
+      expectedRevision: 1,
+    })
+
+    expect(payload.source_anchors).toHaveLength(1)
+    expect(payload.source_anchors[0]?.id).toBe(uuid7)
+  })
+})
 
 describe('toNoteVersionCreatePayload', () => {
   it('maps canonical Tiptap JSON, anchors, and confirmed ThoughtModel to the API contract', () => {

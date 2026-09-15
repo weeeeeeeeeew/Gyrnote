@@ -9,6 +9,7 @@ import {
   proposePatchFromAnchorStatuses,
   collectMoveAnchorOps,
   applyMoveAnchorOps,
+  applyConfirmedPatchOps,
   proposePatchFromAnchorResolutions,
   type ModelPatch,
 } from './model-patch'
@@ -67,6 +68,34 @@ describe('applyModelPatch', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) {
       expect(result.errors.some((error) => error.includes('locked'))).toBe(true)
+    }
+  })
+
+  it('adds and deletes edges between existing nodes', () => {
+    const added = applyModelPatch(
+      sampleThoughtModel,
+      patchWith([
+        {
+          op: 'add_edge',
+          edgeId: 'edge-question-tests-claim',
+          sourceNodeId: 'question-direction',
+          targetNodeId: 'claim-product-engineer',
+          type: 'tests',
+          label: null,
+        },
+      ]),
+    )
+    expect(added.ok).toBe(true)
+    if (added.ok) {
+      expect(added.model.edges.some((edge) => edge.id === 'edge-question-tests-claim')).toBe(true)
+    }
+    const removed = applyModelPatch(
+      sampleThoughtModel,
+      patchWith([{ op: 'delete_edge', edgeId: 'edge-evidence-supports-claim' }]),
+    )
+    expect(removed.ok).toBe(true)
+    if (removed.ok) {
+      expect(removed.model.edges.some((edge) => edge.id === 'edge-evidence-supports-claim')).toBe(false)
     }
   })
 })
@@ -374,6 +403,29 @@ describe('collectMoveAnchorOps (user checkpoint)', () => {
     expect(ops).toEqual([
       { op: 'move_anchor', anchorId: 'a-drift', startOffset: 0, endOffset: 4 },
     ])
+  })
+})
+
+describe('applyConfirmedPatchOps', () => {
+  it('applies move_anchor and delete_node together without mutating inputs', () => {
+    const model = structuredClone(sampleThoughtModel)
+    const anchors = [identified('a-move', 0, 4)]
+    const beforeAnchors = structuredClone(anchors)
+    const result = applyConfirmedPatchOps(model, anchors, [
+      { op: 'move_anchor', anchorId: 'a-move', startOffset: 1, endOffset: 3 },
+      { op: 'delete_node', nodeId: 'claim-product-engineer' },
+    ])
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) {
+      return
+    }
+    expect(result.anchors[0]).toMatchObject({ id: 'a-move', startOffset: 1, endOffset: 3 })
+    expect(result.model.nodes.some((node) => node.id === 'claim-product-engineer')).toBe(false)
+    expect(anchors).toEqual(beforeAnchors)
+    expect(sampleThoughtModel.nodes.some((node) => node.id === 'claim-product-engineer')).toBe(
+      true,
+    )
   })
 })
 

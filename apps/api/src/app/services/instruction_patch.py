@@ -11,20 +11,22 @@ from pydantic import TypeAdapter, ValidationError
 
 from ..core.config import settings
 from ..schemas.instruction_patch import (
+    AddEdgeOp,
     InstructionOp,
     InstructionPatchRead,
     InstructionPatchRequest,
 )
+from .llm_runtime import LlmNotConfiguredError, resolve_llm_runtime
 
-ALLOWED_TOOL_NAMES = frozenset({"update_node_text", "delete_node", "move_anchor"})
-FORBIDDEN_TOOL_NAMES = frozenset({"add_node", "add_edge"})
+ALLOWED_TOOL_NAMES = frozenset({"update_node_text", "delete_node", "move_anchor", "add_edge", "delete_edge"})
+FORBIDDEN_TOOL_NAMES = frozenset({"add_node"})
 
 INSTRUCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
             "name": "update_node_text",
-            "description": "Change the text of an existing confirmed node. Do not invent node ids.",
+            "description": "Change the text of an existing confirmed node. Do not invent node ids. Do not use this to fake a new relation.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
@@ -40,12 +42,57 @@ INSTRUCTION_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "delete_node",
-            "description": "Delete an existing node that no longer has evidence. Cascades edges.",
+            "description": "Delete an existing node that no longer belongs. Cascades edges.",
             "parameters": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {"node_id": {"type": "string"}},
                 "required": ["node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_edge",
+            "description": "Add a relation between two existing nodes. Use when the instruction is about structure (supports, challenges, answers, depends_on, etc.). Never add_node.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source_node_id": {"type": "string"},
+                    "target_node_id": {"type": "string"},
+                    "type": {
+                        "type": "string",
+                        "enum": [
+                            "supports",
+                            "challenges",
+                            "depends_on",
+                            "qualifies",
+                            "explains",
+                            "leads_to",
+                            "answers",
+                            "tests",
+                            "custom",
+                        ],
+                    },
+                    "label": {"type": "string"},
+                    "id": {"type": "string"},
+                },
+                "required": ["source_node_id", "target_node_id", "type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_edge",
+            "description": "Remove an existing relation by edge id. Use when the instruction says a link is wrong or should not exist.",
+            "parameters": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"edge_id": {"type": "string"}},
+                "required": ["edge_id"],
             },
         },
     },
@@ -70,23 +117,39 @@ INSTRUCTION_TOOLS: list[dict[str, Any]] = [
 
 INSTRUCTION_SYSTEM_PROMPT = """
 You edit a confirmed ThoughtModel by calling tools. Output tool calls only.
-Allowed tools: update_node_text, delete_node, move_anchor.
-Never call add_node or add_edge. Never invent node ids or anchor ids.
-Do not modify locked nodes. Do not cover uncovered note paragraphs by adding nodes.
+Allowed tools: update_node_text, delete_node, add_edge, delete_edge, move_anchor.
+Never call add_node. Never invent node ids, edge ids, or anchor ids.
+Do not modify locked nodes (including edges that touch locked nodes).
+Do not cover uncovered note paragraphs by adding nodes.
+The graph is a thinking skeleton, not a second copy of the note.
+
+Structure vs wording:
+- If the instruction is about relations / structure / 边 / 支撑 / 反驳 / 回答 / 依赖,
+  you MUST call add_edge and/or delete_edge (and delete_node only if a node should disappear).
+- Do NOT rewrite node text as a substitute for adding or removing a relation.
+- update_node_text is only for wording the instruction actually names.
+
+Node types (existing nodes only):
+question, concept, observation, claim, evidence, assumption, counterpoint,
+decision, open_question, action, custom.
+Edge types: supports, challenges, depends_on, qualifies, explains, leads_to,
+answers, tests, custom (custom requires label).
+Minimal ops: only change what the instruction names. Do not invent decorative structure.
+
 The result is a candidate patch; a human must approve before it writes the confirmed model.
 """.strip()
 
 _OP_ADAPTER: TypeAdapter[InstructionOp] = TypeAdapter(InstructionOp)
 
 ParseInstructionTools = Callable[[object], list[InstructionOp]]
-ChatWithTools = Callable[[list[dict[str, str]], list[dict[str, Any]]], Awaitable[object]]
+ChatWithTools = Callable[..., Awaitable[object]]
 
 
 class InstructionPatchError(Exception):
     pass
 
 
-class InstructionPatchNotConfiguredError(InstructionPatchError):
+class InstructionPatchNotConfiguredError(InstructionPatchError, LlmNotConfiguredError):
     pass
 
 
@@ -99,9 +162,9 @@ def parse_instruction_tool_calls(payload: object) -> list[InstructionOp]:
 
     Inputs: chat completions JSON with choices[0].message.tool_calls[].function.{name, arguments}.
     arguments is a JSON object string. Preserve tool_calls order.
-    Allowlist: update_node_text, delete_node, move_anchor.
+    Allowlist: update_node_text, delete_node, add_edge, delete_edge, move_anchor.
     Fail closed with InstructionPatchInvalidError when the envelope is missing, tool_calls is empty,
-    name is unknown/add_node/add_edge, arguments are not JSON objects, extra fields appear,
+    name is unknown/add_node, arguments are not JSON objects, extra fields appear,
     or required fields are blank.
     """
     if not isinstance(payload, dict):
@@ -159,8 +222,12 @@ def build_instruction_patch(
     nodes = {node.id: node for node in request.thought_model.nodes}
     locked = {node.id for node in request.thought_model.nodes if node.review_status == "locked"}
     anchors = {anchor.id for anchor in request.source_anchors}
+    edges = {edge.id: edge for edge in request.thought_model.edges}
+    seen_edge_keys: set[tuple[str, str, str]] = {
+        (edge.source_node_id, edge.target_node_id, edge.type) for edge in request.thought_model.edges
+    }
     validated: list[InstructionOp] = []
-    for op in ops:
+    for index, op in enumerate(ops):
         if op.op == "update_node_text":
             node = nodes.get(op.node_id)
             if node is None:
@@ -177,6 +244,28 @@ def build_instruction_patch(
         elif op.op == "move_anchor":
             if op.anchor_id not in anchors:
                 raise ValueError(f"unknown anchor: {op.anchor_id}")
+            validated.append(op)
+        elif op.op == "add_edge":
+            if op.source_node_id not in nodes or op.target_node_id not in nodes:
+                raise ValueError("unknown node")
+            if op.source_node_id in locked or op.target_node_id in locked:
+                raise ValueError("node is locked")
+            key = (op.source_node_id, op.target_node_id, op.type)
+            if key in seen_edge_keys:
+                raise ValueError("duplicate edge")
+            seen_edge_keys.add(key)
+            edge_id = op.id or f"nl-e-{index}-{op.source_node_id}-{op.target_node_id}"
+            if edge_id in edges or any(
+                isinstance(item, AddEdgeOp) and item.id == edge_id for item in validated
+            ):
+                edge_id = f"{edge_id}-{index}"
+            validated.append(op.model_copy(update={"id": edge_id}))
+        elif op.op == "delete_edge":
+            edge = edges.get(op.edge_id)
+            if edge is None:
+                raise ValueError(f"unknown edge: {op.edge_id}")
+            if edge.source_node_id in locked or edge.target_node_id in locked:
+                raise ValueError("node is locked")
             validated.append(op)
         else:
             raise ValueError("unsupported op")
@@ -197,7 +286,7 @@ def coerce_instruction_op(raw: object) -> InstructionOp:
         raise InstructionPatchInvalidError("tool call arguments must be an object")
     name = raw.get("op")
     if name in FORBIDDEN_TOOL_NAMES:
-        raise InstructionPatchInvalidError("add_node/add_edge is not allowed")
+        raise InstructionPatchInvalidError("add_node is not allowed")
     if name not in ALLOWED_TOOL_NAMES:
         raise InstructionPatchInvalidError("unknown tool name")
     try:
@@ -209,21 +298,20 @@ def coerce_instruction_op(raw: object) -> InstructionOp:
 async def call_openai_compatible_tools(
     messages: list[dict[str, str]],
     tools: list[dict[str, Any]],
+    llm_override: dict[str, Any] | None = None,
 ) -> object:
-    if not settings.LLM_ENABLED:
-        raise InstructionPatchNotConfiguredError("LLM compilation is disabled")
-    api_key = settings.LLM_API_KEY.get_secret_value() if settings.LLM_API_KEY is not None else ""
-    if not api_key.strip():
-        raise InstructionPatchNotConfiguredError("LLM_API_KEY is not configured")
+    try:
+        api_key, base_url, model = resolve_llm_runtime(llm_override)
+    except LlmNotConfiguredError as exc:
+        raise InstructionPatchNotConfiguredError(str(exc)) from exc
 
-    base_url = settings.LLM_BASE_URL.rstrip("/")
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body: dict[str, Any] = {
-        "model": settings.LLM_MODEL,
+        "model": model,
         "messages": messages,
         "tools": tools,
         "tool_choice": "auto",
@@ -249,8 +337,12 @@ async def call_openai_compatible_tools(
 
 def build_instruction_messages(request: InstructionPatchRequest) -> list[dict[str, str]]:
     node_lines = [
-        f"- id={node.id}; status={node.review_status}; text={node.text}"
+        f"- id={node.id}; type={node.type}; status={node.review_status}; text={node.text}"
         for node in request.thought_model.nodes
+    ]
+    edge_lines = [
+        f"- id={edge.id}; {edge.source_node_id}->{edge.target_node_id}; type={edge.type}; status={edge.review_status}"
+        for edge in request.thought_model.edges
     ]
     anchor_lines = [
         f"- id={anchor.id}; block={anchor.block_id}; offsets={anchor.start_offset}:{anchor.end_offset}"
@@ -261,6 +353,7 @@ def build_instruction_messages(request: InstructionPatchRequest) -> list[dict[st
         f"model_id={request.thought_model.id}\n"
         f"model_version={request.thought_model.version}\n"
         f"nodes:\n{chr(10).join(node_lines) or '- none'}\n"
+        f"edges:\n{chr(10).join(edge_lines) or '- none'}\n"
         f"anchors:\n{chr(10).join(anchor_lines) or '- none'}\n"
         f"instruction:\n{request.instruction}"
     )
@@ -275,9 +368,16 @@ async def compile_instruction_patch(
     *,
     parse_tools: ParseInstructionTools | None = None,
     chat_with_tools: ChatWithTools | None = None,
+    llm_override: dict[str, Any] | None = None,
 ) -> InstructionPatchRead:
     parse = parse_tools or parse_instruction_tool_calls
-    chat = chat_with_tools or call_openai_compatible_tools
-    payload = await chat(build_instruction_messages(request), INSTRUCTION_TOOLS)
+    if chat_with_tools is None:
+        payload = await call_openai_compatible_tools(
+            build_instruction_messages(request),
+            INSTRUCTION_TOOLS,
+            llm_override,
+        )
+    else:
+        payload = await chat_with_tools(build_instruction_messages(request), INSTRUCTION_TOOLS)
     ops = parse(payload)
     return build_instruction_patch(request, ops)

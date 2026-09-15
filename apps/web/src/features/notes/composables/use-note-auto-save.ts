@@ -1,6 +1,6 @@
 import { computed, getCurrentScope, onScopeDispose, ref } from 'vue'
 
-const DEFAULT_DELAY_MS = 800
+const DEFAULT_DELAY_MS = 8_000
 
 /**
  * Coalesces local edits into one save. A failed request is deliberately not

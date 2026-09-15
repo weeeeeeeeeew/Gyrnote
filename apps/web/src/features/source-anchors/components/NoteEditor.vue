@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import type { JSONContent } from '@tiptap/core'
-import { TextSelection } from '@tiptap/pm/state'
+import { Extension, type JSONContent } from '@tiptap/core'
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { onBeforeUnmount, ref, watch } from 'vue'
@@ -21,11 +23,15 @@ import {
 } from '../domain/source-anchor'
 import { StableBlockId } from '../extensions/stable-block-id'
 
-const props = defineProps<{
-  content: JSONContent
-  canAttachSource: boolean
-  activeSourceAnchor: IdentifiedSourceAnchor | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    content: JSONContent
+    canAttachSource: boolean
+    activeSourceAnchor: IdentifiedSourceAnchor | null
+    activeSourceAnchors?: IdentifiedSourceAnchor[]
+  }>(),
+  { activeSourceAnchors: () => [] },
+)
 
 const emit = defineEmits<{
   update: [content: JSONContent]
@@ -40,10 +46,59 @@ interface EditorFeedback {
 }
 
 const feedback = ref<EditorFeedback | null>(null)
+const highlightTick = ref(0)
+
+function listActiveAnchors(): IdentifiedSourceAnchor[] {
+  if ((props.activeSourceAnchors?.length ?? 0) > 0) {
+    return props.activeSourceAnchors
+  }
+  return props.activeSourceAnchor ? [props.activeSourceAnchor] : []
+}
+
+function focusedAnchor(): IdentifiedSourceAnchor | null {
+  const anchors = listActiveAnchors()
+  const focusedId = props.activeSourceAnchor?.id
+  return anchors.find((anchor) => anchor.id === focusedId) ?? anchors[0] ?? null
+}
+
+function decorationSetForDoc(doc: ProseMirrorNode): DecorationSet {
+  void highlightTick.value
+  const decorations: Decoration[] = []
+  const focusedId = focusedAnchor()?.id
+  for (const anchor of listActiveAnchors()) {
+    const result = resolveSourceAnchor(doc, anchor, hashSourceQuote)
+    if (result.status === 'invalid') {
+      continue
+    }
+    decorations.push(
+      Decoration.inline(result.from, result.to, {
+        class:
+          anchor.id === focusedId
+            ? 'note-editor__anchor-hit is-focused'
+            : 'note-editor__anchor-hit',
+      }),
+    )
+  }
+  return decorations.length === 0 ? DecorationSet.empty : DecorationSet.create(doc, decorations)
+}
+
+const AnchorHighlight = Extension.create({
+  name: 'anchorHighlight',
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('anchorHighlight'),
+        props: {
+          decorations: (state) => decorationSetForDoc(state.doc),
+        },
+      }),
+    ]
+  },
+})
 
 const editor = useEditor({
   content: props.content,
-  extensions: [StarterKit, StableBlockId],
+  extensions: [StarterKit, StableBlockId, AnchorHighlight],
   editorProps: {
     attributes: {
       'aria-label': '原文笔记编辑器',
@@ -102,19 +157,34 @@ function handleCreateAnchor() {
   feedback.value = { message: `已关联原文：“${anchor.quote}”`, tone: 'success' }
 }
 
-function locateActiveAnchor() {
+function locateActiveAnchor(cycle = false) {
   const currentEditor = editor.value
-  const anchor = props.activeSourceAnchor
+  const anchors = listActiveAnchors()
 
-  if (!currentEditor || !anchor) {
+  if (!currentEditor || anchors.length === 0) {
     feedback.value = { message: '当前节点尚未关联原文。', tone: 'warning' }
     return
+  }
+
+  let anchor = focusedAnchor() ?? anchors[0]
+  if (!anchor) {
+    feedback.value = { message: '当前节点尚未关联原文。', tone: 'warning' }
+    return
+  }
+  const focusedId = anchor.id
+  if (cycle && anchors.length > 1) {
+    const currentIndex = anchors.findIndex((item) => item.id === focusedId)
+    const next = anchors[(currentIndex + 1) % anchors.length]
+    if (next) {
+      anchor = next
+    }
   }
 
   const result = resolveSourceAnchor(currentEditor.state.doc, anchor, hashSourceQuote)
 
   if (result.status === 'invalid') {
     feedback.value = { message: invalidAnchorMessages[result.reason], tone: 'error' }
+    highlightTick.value += 1
     return
   }
 
@@ -124,31 +194,57 @@ function locateActiveAnchor() {
 
   currentEditor.view.dispatch(transaction)
   currentEditor.view.focus()
+  highlightTick.value += 1
+  const ordinal = anchors.findIndex((item) => item.id === anchor.id) + 1
+  const prefix = anchors.length > 1 ? `第 ${ordinal}/${anchors.length} 处` : '原文'
   feedback.value = {
     message:
       result.status === 'valid'
-        ? `已定位原文：“${anchor.quote}”`
-        : `原文位置已变化，已按唯一文本重新定位：“${anchor.quote}”`,
+        ? `已定位${prefix}：“${anchor.quote}”`
+        : `原文位置已变化，已按唯一文本重新定位${prefix}：“${anchor.quote}”`,
     tone: result.status === 'valid' ? 'success' : 'warning',
   }
 }
 
 function refreshActiveAnchorStatus() {
   const currentEditor = editor.value
-  const anchor = props.activeSourceAnchor
+  const anchors = listActiveAnchors()
 
-  if (!currentEditor || !anchor) {
+  if (!currentEditor || anchors.length === 0) {
     return
   }
 
-  const result = resolveSourceAnchor(currentEditor.state.doc, anchor, hashSourceQuote)
+  let invalid = 0
+  let drifted = 0
+  for (const anchor of anchors) {
+    const result = resolveSourceAnchor(currentEditor.state.doc, anchor, hashSourceQuote)
+    if (result.status === 'invalid') {
+      invalid += 1
+    } else if (result.status === 'drifted') {
+      drifted += 1
+    }
+  }
 
-  if (result.status === 'invalid') {
-    feedback.value = { message: invalidAnchorMessages[result.reason], tone: 'error' }
-  } else if (result.status === 'drifted') {
-    feedback.value = { message: '原文位置已变化，锚点可以迁移。', tone: 'warning' }
+  highlightTick.value += 1
+
+  if (invalid > 0) {
+    feedback.value = {
+      message: `当前节点有 ${anchors.length} 处原文锚点，其中 ${invalid} 处已失效。`,
+      tone: 'error',
+    }
+  } else if (drifted > 0) {
+    feedback.value = {
+      message: `当前节点有 ${anchors.length} 处原文锚点，其中 ${drifted} 处位置已变化，可以迁移。`,
+      tone: 'warning',
+    }
   } else {
-    feedback.value = { message: '当前节点的原文锚点有效。', tone: 'success' }
+    feedback.value = {
+      message:
+        anchors.length === 1
+          ? '当前节点的原文锚点有效。'
+          : `当前节点的 ${anchors.length} 处原文锚点均有效。`,
+      tone: 'success',
+    }
   }
 }
 
@@ -163,13 +259,42 @@ watch(
   },
 )
 
+const skipAnchorCollapse = ref(false)
+
+function handleEditorPointerDown() {
+  skipAnchorCollapse.value = true
+}
+
+function collapseLocatedSelection() {
+  const currentEditor = editor.value
+  if (!currentEditor) {
+    return
+  }
+  const { from, to } = currentEditor.state.selection
+  if (from === to) {
+    return
+  }
+  currentEditor.view.dispatch(
+    currentEditor.state.tr.setSelection(TextSelection.create(currentEditor.state.doc, from, from)),
+  )
+}
+
 watch(
-  [editor, () => props.activeSourceAnchor],
+  [editor, () => props.activeSourceAnchor, () => listActiveAnchors().map((anchor) => anchor.id).join('|')],
   ([currentEditor, anchor]) => {
-    if (currentEditor && anchor) {
-      locateActiveAnchor()
-    } else if (!anchor) {
-      feedback.value = null
+    if (currentEditor && listActiveAnchors().length > 0) {
+      skipAnchorCollapse.value = false
+      locateActiveAnchor(false)
+      return
+    }
+    feedback.value = null
+    highlightTick.value += 1
+    if (!currentEditor || !anchor) {
+      if (skipAnchorCollapse.value) {
+        skipAnchorCollapse.value = false
+        return
+      }
+      collapseLocatedSelection()
     }
   },
   { flush: 'post' },
@@ -218,16 +343,132 @@ defineExpose({ resolveAnchorStatuses })
         <p class="note-editor__eyebrow">原文锚定</p>
         <h2>原文笔记</h2>
       </div>
-      <div class="note-editor__actions">
+      <div class="note-editor__actions" data-keep-selection>
         <slot name="actions" />
-        <button type="button" :disabled="!canAttachSource" @click="handleCreateAnchor">
+        <button
+          type="button"
+          data-keep-selection
+          :disabled="!canAttachSource"
+          @pointerdown.prevent
+          @click="handleCreateAnchor"
+        >
           关联选区
         </button>
-        <button type="button" :disabled="!activeSourceAnchor" @click="locateActiveAnchor">
+        <button
+          type="button"
+          data-keep-selection
+          :disabled="listActiveAnchors().length === 0"
+          @pointerdown.prevent
+          @click="locateActiveAnchor(false)"
+        >
           定位锚点
         </button>
       </div>
     </header>
+
+    <div v-if="editor" class="note-editor__toolbar" role="toolbar" aria-label="Markdown 格式">
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('bold') }"
+        aria-label="加粗"
+        @click="editor.chain().focus().toggleBold().run()"
+      >
+        B
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('italic') }"
+        aria-label="斜体"
+        @click="editor.chain().focus().toggleItalic().run()"
+      >
+        I
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('strike') }"
+        aria-label="删除线"
+        @click="editor.chain().focus().toggleStrike().run()"
+      >
+        S
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('heading', { level: 1 }) }"
+        aria-label="一级标题"
+        @click="editor.chain().focus().toggleHeading({ level: 1 }).run()"
+      >
+        H1
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('heading', { level: 2 }) }"
+        aria-label="二级标题"
+        @click="editor.chain().focus().toggleHeading({ level: 2 }).run()"
+      >
+        H2
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('heading', { level: 3 }) }"
+        aria-label="三级标题"
+        @click="editor.chain().focus().toggleHeading({ level: 3 }).run()"
+      >
+        H3
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('bulletList') }"
+        aria-label="无序列表"
+        @click="editor.chain().focus().toggleBulletList().run()"
+      >
+        •
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('orderedList') }"
+        aria-label="有序列表"
+        @click="editor.chain().focus().toggleOrderedList().run()"
+      >
+        1.
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('blockquote') }"
+        aria-label="引用"
+        @click="editor.chain().focus().toggleBlockquote().run()"
+      >
+        “
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('codeBlock') }"
+        aria-label="代码块"
+        @click="editor.chain().focus().toggleCodeBlock().run()"
+      >
+        { }
+      </button>
+      <button
+        type="button"
+        aria-label="分割线"
+        @click="editor.chain().focus().setHorizontalRule().run()"
+      >
+        ―
+      </button>
+      <button
+        type="button"
+        :class="{ 'is-active': editor.isActive('code') }"
+        aria-label="行内代码"
+        @click="editor.chain().focus().toggleCode().run()"
+      >
+        &lt;/&gt;
+      </button>
+      <button type="button" aria-label="撤销" @click="editor.chain().focus().undo().run()">
+        撤销
+      </button>
+      <button type="button" aria-label="重做" @click="editor.chain().focus().redo().run()">
+        重做
+      </button>
+    </div>
 
     <div class="note-editor__body">
       <slot name="status" />
@@ -239,7 +480,12 @@ defineExpose({ resolveAnchorStatuses })
       >
         {{ feedback.message }}
       </p>
-      <EditorContent v-if="editor" class="note-editor__surface" :editor="editor" />
+      <EditorContent
+        v-if="editor"
+        class="note-editor__surface"
+        :editor="editor"
+        @pointerdown="handleEditorPointerDown"
+      />
     </div>
   </section>
 </template>
@@ -247,10 +493,10 @@ defineExpose({ resolveAnchorStatuses })
 <style scoped>
 .note-editor {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 0;
-  border-right: 1px solid #deddd4;
-  background: #fbfaf5;
+  border-right: 1px solid var(--gyre-line);
+  background: #ffffff;
 }
 
 .note-editor__body {
@@ -270,7 +516,39 @@ defineExpose({ resolveAnchorStatuses })
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid #ebe8de;
+  border-bottom: 1px solid var(--gyre-line);
+}
+
+.note-editor__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--gyre-line);
+  background: var(--gyre-surface);
+}
+
+.note-editor__toolbar button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--gyre-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #ffffff;
+}
+
+.note-editor__toolbar button.is-active,
+.note-editor__toolbar button:hover,
+.note-editor__toolbar button:focus-visible {
+  border-color: var(--gyre);
+  color: var(--gyre-deep);
+  background: var(--gyre-mist);
+  outline: none;
 }
 
 .note-editor__actions {
@@ -284,9 +562,9 @@ defineExpose({ resolveAnchorStatuses })
 .note-editor__actions button {
   min-height: 32px;
   padding: 6px 10px;
-  border: 1px solid #bfc7bb;
+  border: 1px solid var(--gyre-line);
   border-radius: 6px;
-  color: #334737;
+  color: var(--gyre-deep);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
@@ -295,36 +573,37 @@ defineExpose({ resolveAnchorStatuses })
 
 .note-editor__actions :deep(button.save-note),
 .note-editor__actions button.save-note {
-  border-color: #38523a;
+  border-color: var(--gyre);
   color: #ffffff;
-  background: #38523a;
+  background: var(--gyre);
 }
 
 .note-editor__actions :deep(button:disabled),
 .note-editor__actions button:disabled {
-  color: #92978f;
+  color: var(--gyre-deep);
   cursor: not-allowed;
-  background: #eeeee9;
+  background: var(--gyre-mist);
+  opacity: 0.7;
 }
 
 .note-editor__actions :deep(button:hover:not(:disabled)),
 .note-editor__actions :deep(button:focus-visible),
 .note-editor__actions button:hover:not(:disabled),
 .note-editor__actions button:focus-visible {
-  border-color: #57735b;
+  border-color: var(--gyre);
   outline: none;
 }
 
 .note-editor__feedback {
   margin: 0;
   padding: 8px 16px;
-  border-bottom: 1px solid #ebe8de;
+  border-bottom: 1px solid var(--gyre-line);
   font-size: 12px;
 }
 
 .note-editor__feedback.is-success {
-  color: #315a3b;
-  background: #edf5eb;
+  color: var(--gyre-deep);
+  background: var(--gyre-mist);
 }
 
 .note-editor__feedback.is-warning {
@@ -339,7 +618,7 @@ defineExpose({ resolveAnchorStatuses })
 
 .note-editor__eyebrow {
   margin-bottom: 4px;
-  color: #687064;
+  color: var(--gyre-deep);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -366,5 +645,15 @@ defineExpose({ resolveAnchorStatuses })
 :deep(.note-editor__content p) {
   margin: 12px 0;
   line-height: 1.75;
+}
+
+:deep(.note-editor__anchor-hit) {
+  background: rgb(0 160 232 / 14%);
+  border-radius: 2px;
+}
+
+:deep(.note-editor__anchor-hit.is-focused) {
+  background: rgb(0 160 232 / 28%);
+  box-shadow: inset 0 -2px 0 var(--gyre);
 }
 </style>
